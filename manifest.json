@@ -1,20 +1,19 @@
-// manifest.json
-// Configuración para cargar librerías localmente.
-// Corregido: Añadido tesseract.min.js a web_accessible_resources.
 {
   "manifest_version": 3,
-  "name": "Traductor de Manga (Local Libs)",
-  "version": "0.2.1", // Incrementa la versión
-  "description": "Traduce texto dentro de imágenes en páginas web (ej. manga) usando librerías locales.",
+  "name": "Traductor de Manhwa",
+  "version": "1.0.0",
+  "description": "Traduce texto coreano en imágenes de manhwa usando Google Vision API",
   "permissions": [
     "activeTab",
     "scripting",
     "storage"
   ],
+  "host_permissions": [
+    "https://vision.googleapis.com/*",
+    "https://api.mymemory.translated.net/*"
+  ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self';"
-    // Considerar añadir 'blob:' a worker-src si Tesseract lo necesita en el futuro:
-    // "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self' blob:;"
+    "extension_pages": "script-src 'self'; object-src 'self';"
   },
   "action": {
     "default_popup": "popup.html",
@@ -30,7 +29,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["js/content.js"], // Asumiendo que moviste content.js a js/
+      "js": ["js/content.js"],
       "run_at": "document_idle"
     }
   ],
@@ -38,19 +37,5 @@
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  // --- INICIO: Recursos Web Accesibles (CORREGIDO) ---
-  "web_accessible_resources": [
-    {
-      // Permite que la página web acceda a estos archivos específicos.
-      "resources": [
-        "libs/tesseract/tesseract.min.js", // <-- ¡AÑADIDO! El script principal.
-        "libs/tesseract/worker.min.js",    // El worker.
-        "libs/tesseract/core/*",           // El core WASM y archivos relacionados.
-        "langs/*"                          // Los archivos de idioma .traineddata.
-      ],
-      "matches": ["<all_urls>"] // Permite el acceso desde cualquier página.
-    }
-  ]
-  // --- FIN: Recursos Web Accesibles ---
+  }
 }

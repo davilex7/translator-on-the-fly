@@ -1,14 +1,20 @@
-// content.js
-// Llama al backend y maneja la respuesta con bloques de texto y coordenadas.
-// Ajustes menores en estilos de overlay.
+// content.js - Script de contenido
+// Detecta imágenes, las convierte a base64 y las envía al background para OCR/traducción
 
-console.log("Content script v1.9 (Overlay Style Adjust) cargado - Traductor Manga");
+console.log("Content script v2.0 (Local Vision API) cargado - Traductor Manhwa");
 
+// --- Configuración ---
+const OVERLAY_CLASS = 'manhwa-translation-overlay';
+const MIN_IMAGE_WIDTH = 100;
+const MIN_IMAGE_HEIGHT = 100;
+const MAX_CONCURRENT = 2;
+
+// --- Estado ---
 let isTranslationActive = false;
 let targetLanguage = 'es';
-const OVERLAY_CLASS = 'manga-translation-overlay';
-// !!! REEMPLAZA 'tu-servicio-ocr' CON EL NOMBRE REAL DE TU SERVICIO EN RENDER !!!
-const BACKEND_URL = "https://my-ocr-server.onrender.com/ocr-translate";
+let processingQueue = [];
+let activeProcessing = 0;
+let stats = { images: 0, blocks: 0 };
 
 // --- Cargar estado inicial ---
 chrome.storage.sync.get(['isEnabled', 'targetLanguage'], (result) => {
@@ -20,236 +26,347 @@ chrome.storage.sync.get(['isEnabled', 'targetLanguage'], (result) => {
     }
 });
 
-// --- Listener de mensajes ---
+// --- Listener de mensajes del popup ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log("Mensaje recibido en content script:", request);
+    console.log("Mensaje recibido:", request);
+
     if (request.action === "toggleTranslation") {
         isTranslationActive = request.payload;
-        console.log(`Traducción ${isTranslationActive ? 'activada' : 'desactivada'}.`);
+        console.log(`Traducción ${isTranslationActive ? 'activada' : 'desactivada'}`);
+
         if (isTranslationActive) {
             startTranslationProcess();
-            sendResponse({ status: "processing_backend" });
+            sendResponse({ status: "processing" });
         } else {
             stopTranslationProcess();
             sendResponse({ status: "stopped" });
         }
         return true;
-    } else if (request.action === "setLanguage") {
+    }
+
+    if (request.action === "setLanguage") {
         targetLanguage = request.payload;
-        console.log(`Idioma destino: ${targetLanguage}`);
+        console.log(`Idioma cambiado a: ${targetLanguage}`);
+
         if (isTranslationActive) {
             stopTranslationProcess();
             startTranslationProcess();
-            sendResponse({ status: "languageSet_reprocessing_backend" });
+            sendResponse({ status: "reprocessing" });
         } else {
-            sendResponse({ status: "languageSet_inactive" });
+            sendResponse({ status: "languageSet" });
         }
         return true;
     }
 });
 
-// --- Función para llamar al Backend ---
-// (Sin cambios respecto a v1.6)
-async function getOcrAndTranslationFromBackend(imageUrl, lang) {
-    if (!BACKEND_URL || BACKEND_URL.includes("tu-servicio-ocr")) {
-        console.error("!!! ERROR: La URL del backend no está configurada correctamente en content.js !!!");
-        updatePopupError("Error Configuración", "URL del backend no configurada.");
-        return null;
-    }
-    console.log(`Llamando al backend: ${BACKEND_URL} para ${imageUrl}`);
-    try {
-        const response = await fetch(BACKEND_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', },
-            body: JSON.stringify({ imageUrl: imageUrl, targetLang: lang })
-        });
-        if (!response.ok) {
-            let errorMsg = `Error del servidor: ${response.status}`;
-            try { const errorData = await response.json(); errorMsg = errorData.error || errorMsg; } catch (e) {}
-            console.error(`Error en respuesta del backend (${response.status}): ${errorMsg}`);
-            throw new Error(errorMsg);
-        }
-        const data = await response.json();
-        console.log(`Respuesta del backend recibida para ${imageUrl}:`, data);
-        return data;
-    } catch (error) {
-        console.error(`Error al llamar al backend para ${imageUrl}:`, error);
-        return null;
-    }
-}
-
-
-// --- Función principal para iniciar la traducción ---
-// (Sin cambios respecto a v1.6)
+// --- Función principal ---
 async function startTranslationProcess() {
-    console.log(`Iniciando proceso con Backend al idioma: ${targetLanguage}`);
-    updatePopupProgress("Buscando imágenes...", 25);
-    const images = document.querySelectorAll('img');
-    console.log(`Encontradas ${images.length} imágenes.`);
-    if (images.length === 0) { updatePopupComplete(); return; }
-    let processedCount = 0;
-    let errorOccurred = false;
-    let overlaysCreatedCount = 0;
-    let successfulOcrCount = 0;
-    const MAX_CONCURRENT_REQUESTS = 1;
-    const imageQueue = [];
-    for (const img of images) {
-        let isPotentiallyValid = false;
-         try {
-            if (img.offsetParent !== null && (img.complete || img.src)) {
-                 if (img.complete && (img.naturalWidth < 50 || img.naturalHeight < 30)) {} else { isPotentiallyValid = true; }
-            }
-         } catch(e) {}
-         if (isPotentiallyValid && !img.dataset.ocrOverlay) { imageQueue.push(img); }
-    }
-    const totalImagesToProcess = imageQueue.length;
-    console.log(`Se intentarán procesar ${totalImagesToProcess} imágenes válidas.`);
-    if (totalImagesToProcess === 0) { updatePopupComplete(); return; }
-    let activeRequests = 0;
-    const processQueue = async () => {
-        while (imageQueue.length > 0 && activeRequests < MAX_CONCURRENT_REQUESTS) {
-            activeRequests++;
-            const img = imageQueue.shift();
-            try {
-                if (!img.complete) {
-                    console.log(` -> Esperando carga de ${img.src}`);
-                    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error(`No se pudo cargar: ${img.src}`)); });
-                    console.log(` -> Carga completa de ${img.src}`);
-                    if (img.naturalWidth < 50 || img.naturalHeight < 30) {
-                         console.log(` -> Imagen ${img.src} demasiado pequeña post-carga. Saltando.`);
-                         processedCount++; activeRequests--; if (imageQueue.length > 0) processQueue(); continue;
-                     }
-                }
-            } catch (loadError) {
-                console.warn(` -> Error cargando imagen ${img.src || '(sin src)'}:`, loadError.message);
-                processedCount++; activeRequests--; if (imageQueue.length > 0) processQueue(); continue;
-            }
-            updatePopupProgress(`Procesando ${processedCount + 1}/${totalImagesToProcess}...`, 30 + (processedCount / totalImagesToProcess) * 60);
-            getOcrAndTranslationFromBackend(img.src, targetLanguage)
-                .then(result => {
-                    if (result && result.blocks && Array.isArray(result.blocks) && result.blocks.length > 0) {
-                        console.log(`%c${result.blocks.length} bloques recibidos para ${img.src}`, 'color: purple; font-weight: bold;');
-                        successfulOcrCount++;
-                        img.dataset.ocrOverlay = 'true';
-                        createOverlaysForImage(img, result.blocks);
-                        overlaysCreatedCount += result.blocks.length;
-                    } else {
-                         console.warn(`Backend no devolvió bloques útiles para ${img.src}`);
-                         img.dataset.ocrOverlay = 'true';
-                    }
-                })
-                .catch(err => {
-                    errorOccurred = true;
-                    console.error(`Error en fetch/procesamiento para ${img.src}:`, err);
-                    img.dataset.ocrOverlay = 'true';
-                    if (!errorOccurred) { updatePopupError("Error Backend", err.message || "Fallo de conexión"); }
-                })
-                .finally(() => {
-                    processedCount++; activeRequests--;
-                    if (imageQueue.length > 0) { processQueue(); }
-                    else if (activeRequests === 0) { finalizeProcessing(overlaysCreatedCount, successfulOcrCount, errorOccurred); }
-                });
-        } // Fin while
-        if (imageQueue.length === 0 && activeRequests === 0) { finalizeProcessing(overlaysCreatedCount, successfulOcrCount, errorOccurred); }
-    }; // Fin processQueue
-    processQueue();
-} // Fin startTranslationProcess
+    console.log(`Iniciando proceso de traducción (idioma: ${targetLanguage})`);
+    stats = { images: 0, blocks: 0 };
 
-// --- Función para finalizar y actualizar estado ---
-function finalizeProcessing(overlayCount, successCount, hadErrors) {
-     console.log(`Fin del procesamiento con Backend. Overlays creados: ${overlayCount} (Éxitos OCR: ${successCount})`);
-     if (!hadErrors) { console.log("Proceso con Backend completado."); updatePopupComplete(); }
-     else { updatePopupError("Finalizado con errores", "Hubo errores durante la comunicación o el OCR/Traducción."); }
+    updatePopupProgress("Buscando imagenes...", 10);
+
+    // Buscar imágenes válidas
+    const images = findValidImages();
+    console.log(`Encontradas ${images.length} imagenes validas`);
+
+    if (images.length === 0) {
+        updatePopupComplete();
+        return;
+    }
+
+    // Crear cola de procesamiento
+    processingQueue = [...images];
+    const totalImages = processingQueue.length;
+    let processedCount = 0;
+
+    updatePopupProgress(`Procesando 0/${totalImages}...`, 20);
+
+    // Procesar cola con concurrencia limitada
+    const processNext = async () => {
+        while (processingQueue.length > 0 && activeProcessing < MAX_CONCURRENT && isTranslationActive) {
+            activeProcessing++;
+            const img = processingQueue.shift();
+
+            try {
+                await processImage(img);
+                stats.images++;
+            } catch (error) {
+                console.error(`Error procesando imagen:`, error);
+            }
+
+            processedCount++;
+            activeProcessing--;
+
+            const progress = 20 + (processedCount / totalImages) * 70;
+            updatePopupProgress(`Procesando ${processedCount}/${totalImages}...`, progress);
+
+            // Continuar con la siguiente
+            if (processingQueue.length > 0 && isTranslationActive) {
+                processNext();
+            }
+        }
+
+        // Verificar si terminamos
+        if (activeProcessing === 0 && processingQueue.length === 0) {
+            console.log(`Proceso completado. Imagenes: ${stats.images}, Bloques: ${stats.blocks}`);
+            updatePopupComplete();
+        }
+    };
+
+    // Iniciar procesamiento paralelo
+    for (let i = 0; i < MAX_CONCURRENT && processingQueue.length > 0; i++) {
+        processNext();
+    }
 }
 
+// --- Buscar imágenes válidas ---
+function findValidImages() {
+    const allImages = document.querySelectorAll('img');
+    const validImages = [];
 
-// --- Función para crear overlays ---
-function createOverlaysForImage(imageElement, blocks) {
-    let container = imageElement.parentElement;
+    for (const img of allImages) {
+        // Saltar si ya procesada
+        if (img.dataset.manhwaProcessed) continue;
+
+        // Verificar visibilidad
+        if (img.offsetParent === null) continue;
+
+        // Verificar tamaño
+        const width = img.naturalWidth || img.width;
+        const height = img.naturalHeight || img.height;
+
+        if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) continue;
+
+        // Verificar que está cargada
+        if (!img.complete) continue;
+
+        validImages.push(img);
+    }
+
+    return validImages;
+}
+
+// --- Procesar una imagen ---
+async function processImage(img) {
+    // Marcar como procesada
+    img.dataset.manhwaProcessed = 'true';
+
+    try {
+        // Convertir imagen a base64
+        const imageBase64 = await imageToBase64(img);
+
+        if (!imageBase64) {
+            console.warn('No se pudo convertir imagen a base64');
+            return;
+        }
+
+        // Enviar al background para OCR + traducción
+        const response = await chrome.runtime.sendMessage({
+            action: 'processImage',
+            imageData: imageBase64,
+            targetLang: targetLanguage
+        });
+
+        if (!response.success) {
+            throw new Error(response.error || 'Error desconocido');
+        }
+
+        const { blocks } = response.data;
+
+        if (blocks && blocks.length > 0) {
+            console.log(`Recibidos ${blocks.length} bloques para imagen`);
+            createOverlaysForImage(img, blocks);
+            stats.blocks += blocks.length;
+        }
+
+    } catch (error) {
+        console.error('Error en processImage:', error);
+        // Si es error de API Key, notificar
+        if (error.message.includes('API Key')) {
+            updatePopupError('API Key', error.message);
+        }
+    }
+}
+
+// --- Convertir imagen a base64 ---
+function imageToBase64(img) {
+    return new Promise((resolve) => {
+        try {
+            // Crear canvas
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Usar dimensiones naturales
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+
+            // Dibujar imagen
+            ctx.drawImage(img, 0, 0);
+
+            // Obtener base64 (sin el prefijo data:image/...)
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+            const base64 = dataUrl.split(',')[1];
+
+            resolve(base64);
+        } catch (error) {
+            // Error de CORS - intentar con fetch
+            console.warn('Error canvas (CORS?), intentando fetch:', error.message);
+            fetchImageAsBase64(img.src).then(resolve).catch(() => resolve(null));
+        }
+    });
+}
+
+// --- Fetch imagen como base64 (para evitar CORS) ---
+async function fetchImageAsBase64(url) {
+    try {
+        const response = await fetch(url);
+        const blob = await response.blob();
+
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result;
+                const base64 = dataUrl.split(',')[1];
+                resolve(base64);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error('Error fetch imagen:', error);
+        return null;
+    }
+}
+
+// --- Crear overlays para una imagen ---
+function createOverlaysForImage(img, blocks) {
+    let container = img.parentElement;
     if (!container) return;
+
+    // Asegurar posicionamiento relativo del contenedor
     const containerPos = getComputedStyle(container).position;
-    if (containerPos === 'static') { container.style.position = 'relative'; }
-    const imgRect = imageElement.getBoundingClientRect();
+    if (containerPos === 'static') {
+        container.style.position = 'relative';
+    }
+
+    const imgRect = img.getBoundingClientRect();
     if (imgRect.width === 0 || imgRect.height === 0) return;
 
-    console.log(`  -> Creando ${blocks.length} overlays para ${imageElement.src}`);
+    // Calcular factores de escala
+    const scaleX = imgRect.width / img.naturalWidth;
+    const scaleY = imgRect.height / img.naturalHeight;
 
-    blocks.forEach((block, index) => {
-        if (!block || !block.bbox || block.bbox.x1 <= block.bbox.x0 || block.bbox.y1 <= block.bbox.y0 || !block.translatedText) {
-            return; // Saltar si falta información o texto
-        }
+    console.log(`Creando ${blocks.length} overlays (escala: ${scaleX.toFixed(2)}x${scaleY.toFixed(2)})`);
+
+    blocks.forEach((block) => {
+        // Validar bloque
+        if (!block || !block.bbox || !block.translatedText) return;
+        if (block.bbox.x1 <= block.bbox.x0 || block.bbox.y1 <= block.bbox.y0) return;
+
         const overlay = document.createElement('div');
         overlay.classList.add(OVERLAY_CLASS);
-        // *** AJUSTE: Estilos más discretos ***
+
+        // Calcular posición y tamaño
+        const top = img.offsetTop + block.bbox.y0 * scaleY;
+        const left = img.offsetLeft + block.bbox.x0 * scaleX;
+        const width = (block.bbox.x1 - block.bbox.x0) * scaleX;
+        const height = (block.bbox.y1 - block.bbox.y0) * scaleY;
+
+        // Estilos del overlay
         overlay.style.cssText = `
             position: absolute;
-            background-color: rgba(255, 255, 255, 0.95) !important; /* Fondo casi opaco */
-            border: 1px solid #bbb !important; /* Borde gris claro */
-            padding: 1px 3px !important; /* Padding reducido */
-            font-size: 12px !important; /* Fuente más pequeña */
-            font-family: Arial, sans-serif !important;
-            font-weight: normal; /* Peso normal */
-            color: black !important;
-            z-index: 99999 !important;
-            text-align: center !important;
-            overflow: hidden !important;
-            line-height: 1.15 !important; /* Line-height ajustado */
-            pointer-events: none !important;
-            box-sizing: border-box !important;
-            border-radius: 2px; /* Menos redondeado */
-            box-shadow: 0 1px 2px rgba(0,0,0,0.1); /* Sombra más sutil */
-            /* white-space: nowrap !important; */ /* Permitir saltos si es necesario */
+            top: ${top}px;
+            left: ${left}px;
+            width: ${Math.max(20, width)}px;
+            min-height: ${Math.max(16, height)}px;
+            background-color: rgba(255, 255, 255, 0.95);
+            border: 1px solid #ccc;
+            padding: 2px 4px;
+            font-size: ${calculateFontSize(block.translatedText, width, height)}px;
+            font-family: Arial, sans-serif;
+            color: #000;
+            z-index: 99999;
+            text-align: center;
+            overflow: hidden;
+            line-height: 1.2;
+            pointer-events: none;
+            box-sizing: border-box;
+            border-radius: 3px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            word-break: break-word;
         `;
-        const scaleX = imgRect.width / imageElement.naturalWidth;
-        const scaleY = imgRect.height / imageElement.naturalHeight;
-        const top = imageElement.offsetTop + block.bbox.y0 * scaleY;
-        const left = imageElement.offsetLeft + block.bbox.x0 * scaleX;
-        let width = (block.bbox.x1 - block.bbox.x0) * scaleX;
-        let height = (block.bbox.y1 - block.bbox.y0) * scaleY;
-
-        // Añadir un pequeño margen interno al calcular tamaño para que no se pegue al borde
-        width = Math.max(8, width + 2); // Ancho mínimo + margen
-        height = Math.max(8, height + 2); // Alto mínimo + margen
-
-        overlay.style.top = `${top - 1}px`; // Ajustar ligeramente posición
-        overlay.style.left = `${left - 1}px`;
-        overlay.style.width = `${width}px`;
-        overlay.style.minHeight = `${height}px`; // Mínimo alto
 
         overlay.textContent = block.translatedText;
-
-         // Ajuste de fuente (si es muy largo el texto para el ancho)
-         const approxCharWidth = 6; // Ajustado por fuente más pequeña
-         const availableWidth = width - 6; // Restar padding
-         if (availableWidth > 5 && block.translatedText.length * approxCharWidth > availableWidth) {
-             const newSize = Math.max(7, Math.min(12, Math.floor(12 * (availableWidth / (block.translatedText.length * approxCharWidth)))));
-             overlay.style.fontSize = `${newSize}px`;
-             overlay.style.lineHeight = '1.1'; // Ajustar line-height si la fuente es muy pequeña
-         }
-
         container.appendChild(overlay);
     });
 }
 
-// --- Función para detener la traducción ---
-// (Sin cambios)
+// --- Calcular tamaño de fuente óptimo ---
+function calculateFontSize(text, width, height) {
+    const baseSize = 14;
+    const minSize = 8;
+    const maxSize = 18;
+
+    // Área disponible
+    const area = (width - 8) * (height - 4);
+    const charCount = text.length;
+
+    // Estimar tamaño basado en área por caracter
+    const areaPerChar = area / charCount;
+    let fontSize = Math.sqrt(areaPerChar) * 0.9;
+
+    // Limitar al rango permitido
+    fontSize = Math.max(minSize, Math.min(maxSize, fontSize));
+
+    return Math.round(fontSize);
+}
+
+// --- Detener traducción ---
 function stopTranslationProcess() {
-    console.log("Deteniendo proceso y limpiando overlays.");
+    console.log("Deteniendo proceso y limpiando overlays");
+    isTranslationActive = false;
+    processingQueue = [];
+
+    // Eliminar overlays
     document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach(el => el.remove());
-    document.querySelectorAll('img[data-ocrOverlay="true"]').forEach(img => img.removeAttribute('data-ocrOverlay'));
+
+    // Limpiar marcas de procesado
+    document.querySelectorAll('img[data-manhwa-processed]').forEach(img => {
+        img.removeAttribute('data-manhwa-processed');
+    });
+
     hidePopupProgress();
 }
 
-// --- Funciones de comunicación con Popup (sin cambios) ---
+// --- Comunicación con popup ---
 function updatePopupProgress(statusMsg, progressPercent) {
-    chrome.runtime.sendMessage({ type: 'PROGRESS_UPDATE', payload: { status: statusMsg, progress: progressPercent } }).catch(err => {});
+    chrome.runtime.sendMessage({
+        type: 'PROGRESS_UPDATE',
+        payload: { status: statusMsg, progress: progressPercent }
+    }).catch(() => {});
 }
+
 function updatePopupError(shortMessage, detail) {
-     console.error(`Popup Error: ${shortMessage}`, detail);
-     chrome.runtime.sendMessage({ type: 'PROCESS_ERROR', payload: { shortMessage: shortMessage, detail: detail } }).catch(err => {});
+    console.error(`Error: ${shortMessage}`, detail);
+    chrome.runtime.sendMessage({
+        type: 'PROCESS_ERROR',
+        payload: { shortMessage, detail }
+    }).catch(() => {});
 }
+
 function updatePopupComplete() {
-     console.log("Popup Update: Proceso completado.");
-     chrome.runtime.sendMessage({ type: 'PROCESS_COMPLETE' }).catch(err => {});
+    chrome.runtime.sendMessage({
+        type: 'PROCESS_COMPLETE',
+        payload: { stats }
+    }).catch(() => {});
 }
-function hidePopupProgress() {}
+
+function hidePopupProgress() {
+    chrome.runtime.sendMessage({
+        type: 'PROGRESS_HIDE'
+    }).catch(() => {});
+}
