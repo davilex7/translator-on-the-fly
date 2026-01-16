@@ -3,24 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Traductor Manga</title>
+    <title>Traductor Manhwa</title>
     <link href="css/tailwind.min.css" rel="stylesheet">
     <style>
-        /* Estilo básico para el cuerpo del popup */
         body {
-            width: 250px;
-            font-family: 'Inter', sans-serif; /* Fuente limpia */
+            width: 280px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
-        /* Asegura que la fuente Inter se cargue (si usas fuentes de Google Fonts, necesitarías ajustar CSP o descargarlas también) */
-        /* @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap'); */
-        /* Por simplicidad, eliminamos la fuente externa por ahora */
-
-        /* Estilos para el switch (igual que antes) */
         .switch {
             position: relative;
             display: inline-block;
-            width: 56px; /* w-14 */
-            height: 32px; /* h-8 */
+            width: 56px;
+            height: 32px;
         }
         .switch input {
             opacity: 0;
@@ -34,66 +28,118 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: #4B5563; /* bg-gray-600 */
+            background-color: #4B5563;
             transition: .4s;
-            border-radius: 9999px; /* rounded-full */
+            border-radius: 9999px;
         }
         .slider:before {
             position: absolute;
             content: "";
-            height: 24px; /* h-6 */
-            width: 24px; /* w-6 */
-            left: 4px; /* left-1 */
-            bottom: 4px; /* top-1 (ajustado por bottom) */
+            height: 24px;
+            width: 24px;
+            left: 4px;
+            bottom: 4px;
             background-color: white;
             transition: .4s;
-            border-radius: 50%; /* rounded-full */
+            border-radius: 50%;
         }
         input:checked + .slider {
-            background-color: #2563EB; /* bg-blue-600 */
+            background-color: #2563EB;
         }
         input:checked + .slider:before {
-            transform: translateX(24px); /* Mueve el círculo */
+            transform: translateX(24px);
+        }
+        input:disabled + .slider {
+            background-color: #9CA3AF;
+            cursor: not-allowed;
+        }
+        .api-key-input {
+            font-size: 11px;
+            letter-spacing: -0.5px;
+        }
+        .api-status {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+        .api-status.configured {
+            background-color: #10B981;
+        }
+        .api-status.not-configured {
+            background-color: #EF4444;
         }
     </style>
 </head>
 <body class="p-4 bg-gray-100">
-    <div class="flex flex-col items-center space-y-4">
-        <h1 class="text-lg font-semibold text-gray-800">Traductor de Manga</h1>
+    <div class="flex flex-col items-center space-y-3">
+        <h1 class="text-lg font-semibold text-gray-800">Traductor de Manhwa</h1>
         <img src="icons/icon48.png"
-             alt="Icono de la extensión"
-             class="w-12 h-12 rounded-md object-cover"
-             onerror="this.onerror=null; this.src='https://placehold.co/48x48/cccccc/ffffff?text=Icon';">
+             alt="Icono"
+             class="w-10 h-10 rounded-md object-cover"
+             onerror="this.style.display='none'">
 
-        <label class="switch flex items-center cursor-pointer">
-            <input type="checkbox" id="toggle">
-            <span class="slider"></span>
-             <span class="ml-3 text-gray-700 font-medium pl-16">
-                Activar Traducción
-            </span>
-        </label>
+        <div class="w-full bg-white rounded-lg p-3 shadow-sm">
+            <label for="api-key" class="block text-xs font-medium text-gray-700 mb-1">
+                <span id="api-status-indicator" class="api-status not-configured"></span>
+                Google Vision API Key
+            </label>
+            <div class="flex space-x-2">
+                <input type="password"
+                       id="api-key"
+                       placeholder="AIza..."
+                       class="api-key-input flex-1 px-2 py-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <button id="save-api-key"
+                        class="px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 focus:outline-none">
+                    Guardar
+                </button>
+            </div>
+            <p id="api-key-status" class="text-xs text-gray-500 mt-1"></p>
+        </div>
 
-        <p id="status" class="text-sm text-gray-500 mt-2">Estado: Desactivado</p>
-
-        <div class="w-full pt-4">
-            <label for="language-select" class="block text-sm font-medium text-gray-700 mb-1">Traducir a:</label>
-            <select id="language-select" name="language" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
-                <option value="es">Español (Spanish)</option>
-                <option value="en">Inglés (English)</option>
-                <option value="fr">Francés (French)</option>
-                <option value="de">Alemán (German)</option>
-                <option value="it">Italiano (Italian)</option>
-                <option value="pt">Portugués (Portuguese)</option>
-                 <option value="ja">Japonés (Japanese)</option>
+        <div class="w-full">
+            <label for="language-select" class="block text-xs font-medium text-gray-700 mb-1">Traducir a:</label>
+            <select id="language-select" class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500">
+                <option value="es">Espanol</option>
+                <option value="en">English</option>
+                <option value="fr">Francais</option>
+                <option value="de">Deutsch</option>
+                <option value="it">Italiano</option>
+                <option value="pt">Portugues</option>
+                <option value="ja">Japanese</option>
             </select>
         </div>
-         <div id="progress-section" class="w-full pt-4 hidden">
-            <p id="progress-status" class="text-sm text-center text-gray-600 mb-1">Procesando...</p>
-            <div class="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
-                <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+
+        <div class="w-full flex items-center justify-between bg-white rounded-lg p-3 shadow-sm">
+            <span class="text-sm text-gray-700 font-medium">Activar traduccion</span>
+            <label class="switch">
+                <input type="checkbox" id="toggle" disabled>
+                <span class="slider"></span>
+            </label>
+        </div>
+
+        <p id="status" class="text-xs text-gray-500">Configura tu API Key para comenzar</p>
+
+        <div id="progress-section" class="w-full hidden">
+            <p id="progress-status" class="text-xs text-center text-gray-600 mb-1">Procesando...</p>
+            <div class="w-full bg-gray-200 rounded-full h-2">
+                <div id="progress-bar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+            </div>
+        </div>
+
+        <div id="stats-section" class="w-full text-xs text-gray-500 hidden">
+            <div class="flex justify-between">
+                <span>Imagenes procesadas:</span>
+                <span id="stats-images">0</span>
+            </div>
+            <div class="flex justify-between">
+                <span>Bloques de texto:</span>
+                <span id="stats-blocks">0</span>
             </div>
         </div>
     </div>
 
-    <script src="js/popup.js"></script> </body>
+    <script src="js/popup.js"></script>
+</body>
 </html>
