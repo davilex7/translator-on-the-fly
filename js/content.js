@@ -281,7 +281,11 @@ async function processImage(img) {
         }
 
     } catch (error) {
-        console.error('Error procesando imagen:', error.message);
+        // Silenciar errores comunes (descarga fallida, imagen no disponible, etc.)
+        // Solo mostrar si es un error inesperado del servidor
+        if (error.message && !error.message.includes('descargar') && !error.message.includes('Invalid input')) {
+            console.warn('Error procesando imagen:', error.message);
+        }
     }
 }
 

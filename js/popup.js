@@ -136,11 +136,8 @@ function sendMessageToContentScript(message) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
             chrome.tabs.sendMessage(tabs[0].id, message, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.warn("No se pudo enviar mensaje:", chrome.runtime.lastError.message);
-                } else {
-                    console.log("Respuesta:", response);
-                }
+                // Ignorar errores de conexion - es normal si el content script no esta cargado
+                void chrome.runtime.lastError;
             });
         }
     });

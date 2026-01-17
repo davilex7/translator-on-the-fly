@@ -26,7 +26,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleProcessImageUrl(request.imageUrl, request.targetLang)
             .then(result => sendResponse({ success: true, data: result }))
             .catch(error => {
-                console.error('Error en processImageUrl:', error);
+                // Solo log en modo debug - errores de descarga son comunes y esperados
                 sendResponse({ success: false, error: error.message });
             });
         return true;
@@ -117,7 +117,7 @@ async function downloadImageAsBase64(url) {
         const response = await fetch(url);
 
         if (!response.ok) {
-            console.error(`Error descargando imagen: HTTP ${response.status}`);
+            // Silenciar - errores de descarga son comunes (403, 404, etc.)
             return null;
         }
 
@@ -138,7 +138,7 @@ async function downloadImageAsBase64(url) {
             reader.readAsDataURL(blob);
         });
     } catch (error) {
-        console.error('Error en downloadImageAsBase64:', error);
+        // Silenciar - errores de red son comunes
         return null;
     }
 }
