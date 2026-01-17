@@ -1,26 +1,29 @@
 // content.js - Script de contenido
-// Detecta imágenes, las convierte a base64 y las envía al background para OCR/traducción
+// Detecta imagenes, las convierte a base64 y las envia al servidor para OCR/traduccion
 
-console.log("Content script v2.0 (Local Vision API) cargado - Traductor Manhwa");
+console.log("Content script v3.0 (EasyOCR) cargado - Traductor Manhwa");
 
-// --- Configuración ---
+// --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
-const MIN_IMAGE_WIDTH = 100;
-const MIN_IMAGE_HEIGHT = 100;
+const MIN_IMAGE_WIDTH = 200;   // Minimo para considerar imagen de manhwa
+const MIN_IMAGE_HEIGHT = 200;
 const MAX_CONCURRENT = 2;
+const PROCESS_DELAY = 500;     // Delay entre imagenes para no saturar
 
 // --- Estado ---
 let isTranslationActive = false;
 let targetLanguage = 'es';
+let processedImages = new Set();
 let processingQueue = [];
 let activeProcessing = 0;
 let stats = { images: 0, blocks: 0 };
+let observer = null;
 
 // --- Cargar estado inicial ---
 chrome.storage.sync.get(['isEnabled', 'targetLanguage'], (result) => {
     isTranslationActive = result.isEnabled || false;
     targetLanguage = result.targetLanguage || 'es';
-    console.log(`Estado inicial: ${isTranslationActive}, Idioma: ${targetLanguage}`);
+    console.log(`Estado inicial: activo=${isTranslationActive}, idioma=${targetLanguage}`);
     if (isTranslationActive) {
         startTranslationProcess();
     }
@@ -32,7 +35,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "toggleTranslation") {
         isTranslationActive = request.payload;
-        console.log(`Traducción ${isTranslationActive ? 'activada' : 'desactivada'}`);
+        console.log(`Traduccion ${isTranslationActive ? 'activada' : 'desactivada'}`);
 
         if (isTranslationActive) {
             startTranslationProcess();
@@ -59,133 +62,266 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 });
 
-// --- Función principal ---
+// --- Funcion principal ---
 async function startTranslationProcess() {
-    console.log(`Iniciando proceso de traducción (idioma: ${targetLanguage})`);
+    console.log(`Iniciando proceso de traduccion (idioma: ${targetLanguage})`);
     stats = { images: 0, blocks: 0 };
+    processedImages.clear();
 
     updatePopupProgress("Buscando imagenes...", 10);
 
-    // Buscar imágenes válidas
-    const images = findValidImages();
-    console.log(`Encontradas ${images.length} imagenes validas`);
+    // Buscar imagenes actuales
+    await scanAndProcessImages();
+
+    // Observar nuevas imagenes que se anadan al DOM
+    startObserver();
+}
+
+// --- Escanear y procesar todas las imagenes ---
+async function scanAndProcessImages() {
+    const images = findAllImages();
+    console.log(`Encontradas ${images.length} imagenes en la pagina`);
 
     if (images.length === 0) {
+        updatePopupProgress("No se encontraron imagenes", 100);
+        setTimeout(() => updatePopupComplete(), 1000);
+        return;
+    }
+
+    // Filtrar imagenes ya procesadas y agregar a cola
+    const newImages = images.filter(img => !processedImages.has(getImageId(img)));
+    console.log(`${newImages.length} imagenes nuevas para procesar`);
+
+    if (newImages.length === 0) {
         updatePopupComplete();
         return;
     }
 
-    // Crear cola de procesamiento
-    processingQueue = [...images];
-    const totalImages = processingQueue.length;
-    let processedCount = 0;
+    // Esperar a que todas las imagenes carguen
+    updatePopupProgress("Esperando carga de imagenes...", 15);
+    await waitForImagesToLoad(newImages);
 
-    updatePopupProgress(`Procesando 0/${totalImages}...`, 20);
+    // Procesar
+    processingQueue = [...newImages];
+    processQueue();
+}
 
-    // Procesar cola con concurrencia limitada
-    const processNext = async () => {
-        while (processingQueue.length > 0 && activeProcessing < MAX_CONCURRENT && isTranslationActive) {
-            activeProcessing++;
-            const img = processingQueue.shift();
+// --- Encontrar todas las imagenes ---
+function findAllImages() {
+    const images = [];
 
-            try {
-                await processImage(img);
-                stats.images++;
-            } catch (error) {
-                console.error(`Error procesando imagen:`, error);
+    // 1. Buscar todos los <img>
+    document.querySelectorAll('img').forEach(img => {
+        if (isValidImage(img)) {
+            images.push(img);
+        }
+    });
+
+    // 2. Buscar imagenes en canvas (algunos sitios renderizan asi)
+    document.querySelectorAll('canvas').forEach(canvas => {
+        if (canvas.width >= MIN_IMAGE_WIDTH && canvas.height >= MIN_IMAGE_HEIGHT) {
+            images.push(canvas);
+        }
+    });
+
+    // 3. Buscar divs con background-image grandes
+    document.querySelectorAll('div, section, article').forEach(el => {
+        const bg = getComputedStyle(el).backgroundImage;
+        if (bg && bg !== 'none' && bg.startsWith('url(')) {
+            const rect = el.getBoundingClientRect();
+            if (rect.width >= MIN_IMAGE_WIDTH && rect.height >= MIN_IMAGE_HEIGHT) {
+                // Marcar elemento con su URL de fondo
+                el.dataset.bgImage = bg.slice(5, -2); // Extraer URL
+                images.push(el);
+            }
+        }
+    });
+
+    console.log(`Total imagenes encontradas: ${images.length}`);
+    return images;
+}
+
+// --- Validar si una imagen es valida para procesar ---
+function isValidImage(img) {
+    // Obtener src real (puede estar en data-src, data-lazy-src, etc.)
+    const src = getRealImageSrc(img);
+    if (!src) return false;
+
+    // Ignorar imagenes muy pequenas (iconos, avatares, etc.)
+    const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width')) || 0;
+    const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height')) || 0;
+
+    // Si tiene dimensiones conocidas, verificar tamano
+    if (width > 0 && height > 0) {
+        if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) {
+            return false;
+        }
+    }
+
+    // Ignorar imagenes con clases tipicas de UI
+    const classList = img.className.toLowerCase();
+    const ignoreClasses = ['avatar', 'icon', 'logo', 'thumb', 'profile', 'emoji', 'ad', 'banner'];
+    if (ignoreClasses.some(c => classList.includes(c))) {
+        return false;
+    }
+
+    // Ignorar imagenes de tracking/ads por URL
+    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads', 'pixel', 'tracker'];
+    if (ignoreDomains.some(d => src.toLowerCase().includes(d))) {
+        return false;
+    }
+
+    return true;
+}
+
+// --- Obtener src real de imagen (maneja lazy loading) ---
+function getRealImageSrc(img) {
+    // Orden de prioridad para obtener el src
+    return img.src ||
+           img.dataset.src ||
+           img.dataset.lazySrc ||
+           img.dataset.original ||
+           img.dataset.srcset?.split(' ')[0] ||
+           img.getAttribute('data-src') ||
+           img.getAttribute('data-lazy-src') ||
+           img.getAttribute('data-original') ||
+           null;
+}
+
+// --- Generar ID unico para imagen ---
+function getImageId(element) {
+    if (element.tagName === 'IMG') {
+        return getRealImageSrc(element) || element.outerHTML.substring(0, 100);
+    } else if (element.tagName === 'CANVAS') {
+        return `canvas-${element.offsetLeft}-${element.offsetTop}-${element.width}x${element.height}`;
+    } else {
+        return element.dataset.bgImage || element.outerHTML.substring(0, 100);
+    }
+}
+
+// --- Esperar a que las imagenes carguen ---
+function waitForImagesToLoad(images) {
+    const promises = images.map(img => {
+        return new Promise((resolve) => {
+            if (img.tagName !== 'IMG') {
+                resolve();
+                return;
             }
 
-            processedCount++;
+            if (img.complete && img.naturalWidth > 0) {
+                resolve();
+                return;
+            }
+
+            // Esperar carga
+            const timeout = setTimeout(() => resolve(), 10000); // Max 10s
+            img.addEventListener('load', () => {
+                clearTimeout(timeout);
+                resolve();
+            }, { once: true });
+            img.addEventListener('error', () => {
+                clearTimeout(timeout);
+                resolve();
+            }, { once: true });
+
+            // Forzar carga si tiene data-src pero no src
+            const realSrc = getRealImageSrc(img);
+            if (realSrc && !img.src) {
+                img.src = realSrc;
+            }
+        });
+    });
+
+    return Promise.all(promises);
+}
+
+// --- Procesar cola de imagenes ---
+async function processQueue() {
+    const totalImages = processingQueue.length + stats.images;
+
+    while (processingQueue.length > 0 && isTranslationActive) {
+        if (activeProcessing >= MAX_CONCURRENT) {
+            await sleep(100);
+            continue;
+        }
+
+        const element = processingQueue.shift();
+        const imageId = getImageId(element);
+
+        if (processedImages.has(imageId)) continue;
+        processedImages.add(imageId);
+
+        activeProcessing++;
+        processElement(element).finally(() => {
             activeProcessing--;
+            stats.images++;
 
-            const progress = 20 + (processedCount / totalImages) * 70;
-            updatePopupProgress(`Procesando ${processedCount}/${totalImages}...`, progress);
+            const progress = 20 + (stats.images / totalImages) * 70;
+            updatePopupProgress(`Procesando ${stats.images}/${totalImages}...`, progress);
+        });
 
-            // Continuar con la siguiente
-            if (processingQueue.length > 0 && isTranslationActive) {
-                processNext();
-            }
-        }
+        await sleep(PROCESS_DELAY);
+    }
 
-        // Verificar si terminamos
-        if (activeProcessing === 0 && processingQueue.length === 0) {
-            console.log(`Proceso completado. Imagenes: ${stats.images}, Bloques: ${stats.blocks}`);
-            updatePopupComplete();
-        }
-    };
+    // Esperar a que terminen las activas
+    while (activeProcessing > 0) {
+        await sleep(100);
+    }
 
-    // Iniciar procesamiento paralelo
-    for (let i = 0; i < MAX_CONCURRENT && processingQueue.length > 0; i++) {
-        processNext();
+    if (processingQueue.length === 0) {
+        console.log(`Proceso completado. Imagenes: ${stats.images}, Bloques: ${stats.blocks}`);
+        updatePopupComplete();
     }
 }
 
-// --- Buscar imágenes válidas ---
-function findValidImages() {
-    const allImages = document.querySelectorAll('img');
-    const validImages = [];
-
-    for (const img of allImages) {
-        // Saltar si ya procesada
-        if (img.dataset.manhwaProcessed) continue;
-
-        // Verificar visibilidad
-        if (img.offsetParent === null) continue;
-
-        // Verificar tamaño
-        const width = img.naturalWidth || img.width;
-        const height = img.naturalHeight || img.height;
-
-        if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) continue;
-
-        // Verificar que está cargada
-        if (!img.complete) continue;
-
-        validImages.push(img);
-    }
-
-    return validImages;
-}
-
-// --- Procesar una imagen ---
-async function processImage(img) {
-    // Marcar como procesada
-    img.dataset.manhwaProcessed = 'true';
-
+// --- Procesar un elemento (img, canvas, o div con bg) ---
+async function processElement(element) {
     try {
-        // Convertir imagen a base64
-        const imageBase64 = await imageToBase64(img);
+        let imageBase64;
+
+        if (element.tagName === 'IMG') {
+            // Verificar tamano real
+            if (element.naturalWidth < MIN_IMAGE_WIDTH || element.naturalHeight < MIN_IMAGE_HEIGHT) {
+                console.log(`Imagen muy pequena: ${element.naturalWidth}x${element.naturalHeight}`);
+                return;
+            }
+            imageBase64 = await imageToBase64(element);
+        } else if (element.tagName === 'CANVAS') {
+            imageBase64 = canvasToBase64(element);
+        } else if (element.dataset.bgImage) {
+            imageBase64 = await fetchImageAsBase64(element.dataset.bgImage);
+        }
 
         if (!imageBase64) {
-            console.warn('No se pudo convertir imagen a base64');
+            console.warn('No se pudo obtener base64 de:', element);
             return;
         }
 
-        // Enviar al background para OCR + traducción
+        console.log(`Enviando imagen al servidor (${Math.round(imageBase64.length/1024)}KB)...`);
+
+        // Enviar al background para OCR + traduccion
         const response = await chrome.runtime.sendMessage({
             action: 'processImage',
             imageData: imageBase64,
             targetLang: targetLanguage
         });
 
-        if (!response.success) {
-            throw new Error(response.error || 'Error desconocido');
+        if (!response || !response.success) {
+            throw new Error(response?.error || 'Sin respuesta del servidor');
         }
 
         const { blocks } = response.data;
 
         if (blocks && blocks.length > 0) {
-            console.log(`Recibidos ${blocks.length} bloques para imagen`);
-            createOverlaysForImage(img, blocks);
+            console.log(`Recibidos ${blocks.length} bloques de texto`);
+            createOverlaysForElement(element, blocks);
             stats.blocks += blocks.length;
+        } else {
+            console.log('No se detecto texto en la imagen');
         }
 
     } catch (error) {
-        console.error('Error en processImage:', error);
-        // Si es error de API Key, notificar
-        if (error.message.includes('API Key')) {
-            updatePopupError('API Key', error.message);
-        }
+        console.error('Error procesando elemento:', error.message);
     }
 }
 
@@ -193,44 +329,48 @@ async function processImage(img) {
 function imageToBase64(img) {
     return new Promise((resolve) => {
         try {
-            // Crear canvas
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
 
-            // Usar dimensiones naturales
             canvas.width = img.naturalWidth;
             canvas.height = img.naturalHeight;
-
-            // Dibujar imagen
             ctx.drawImage(img, 0, 0);
 
-            // Obtener base64 (sin el prefijo data:image/...)
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-            const base64 = dataUrl.split(',')[1];
-
-            resolve(base64);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            resolve(dataUrl.split(',')[1]);
         } catch (error) {
-            // Error de CORS - intentar con fetch
-            console.warn('Error canvas (CORS?), intentando fetch:', error.message);
-            fetchImageAsBase64(img.src).then(resolve).catch(() => resolve(null));
+            // Error CORS - intentar fetch
+            console.warn('Error canvas (CORS), intentando fetch...');
+            const src = getRealImageSrc(img);
+            if (src) {
+                fetchImageAsBase64(src).then(resolve);
+            } else {
+                resolve(null);
+            }
         }
     });
 }
 
-// --- Fetch imagen como base64 (para evitar CORS) ---
+// --- Canvas a base64 ---
+function canvasToBase64(canvas) {
+    try {
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        return dataUrl.split(',')[1];
+    } catch (e) {
+        return null;
+    }
+}
+
+// --- Fetch imagen como base64 ---
 async function fetchImageAsBase64(url) {
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, { mode: 'cors' });
         const blob = await response.blob();
 
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const reader = new FileReader();
-            reader.onload = () => {
-                const dataUrl = reader.result;
-                const base64 = dataUrl.split(',')[1];
-                resolve(base64);
-            };
-            reader.onerror = reject;
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = () => resolve(null);
             reader.readAsDataURL(blob);
         });
     } catch (error) {
@@ -239,41 +379,54 @@ async function fetchImageAsBase64(url) {
     }
 }
 
-// --- Crear overlays para una imagen ---
-function createOverlaysForImage(img, blocks) {
-    let container = img.parentElement;
+// --- Crear overlays para un elemento ---
+function createOverlaysForElement(element, blocks) {
+    let container = element.parentElement;
     if (!container) return;
 
-    // Asegurar posicionamiento relativo del contenedor
+    // Asegurar posicionamiento relativo
     const containerPos = getComputedStyle(container).position;
     if (containerPos === 'static') {
         container.style.position = 'relative';
     }
 
-    const imgRect = img.getBoundingClientRect();
-    if (imgRect.width === 0 || imgRect.height === 0) return;
+    // Obtener dimensiones
+    let naturalWidth, naturalHeight, displayWidth, displayHeight, offsetTop, offsetLeft;
 
-    // Calcular factores de escala
-    const scaleX = imgRect.width / img.naturalWidth;
-    const scaleY = imgRect.height / img.naturalHeight;
+    if (element.tagName === 'IMG') {
+        naturalWidth = element.naturalWidth;
+        naturalHeight = element.naturalHeight;
+        displayWidth = element.offsetWidth;
+        displayHeight = element.offsetHeight;
+        offsetTop = element.offsetTop;
+        offsetLeft = element.offsetLeft;
+    } else {
+        const rect = element.getBoundingClientRect();
+        naturalWidth = displayWidth = rect.width;
+        naturalHeight = displayHeight = rect.height;
+        offsetTop = element.offsetTop;
+        offsetLeft = element.offsetLeft;
+    }
+
+    if (displayWidth === 0 || displayHeight === 0) return;
+
+    const scaleX = displayWidth / naturalWidth;
+    const scaleY = displayHeight / naturalHeight;
 
     console.log(`Creando ${blocks.length} overlays (escala: ${scaleX.toFixed(2)}x${scaleY.toFixed(2)})`);
 
     blocks.forEach((block) => {
-        // Validar bloque
         if (!block || !block.bbox || !block.translatedText) return;
         if (block.bbox.x1 <= block.bbox.x0 || block.bbox.y1 <= block.bbox.y0) return;
 
         const overlay = document.createElement('div');
         overlay.classList.add(OVERLAY_CLASS);
 
-        // Calcular posición y tamaño
-        const top = img.offsetTop + block.bbox.y0 * scaleY;
-        const left = img.offsetLeft + block.bbox.x0 * scaleX;
+        const top = offsetTop + block.bbox.y0 * scaleY;
+        const left = offsetLeft + block.bbox.x0 * scaleX;
         const width = (block.bbox.x1 - block.bbox.x0) * scaleX;
         const height = (block.bbox.y1 - block.bbox.y0) * scaleY;
 
-        // Estilos del overlay
         overlay.style.cssText = `
             position: absolute;
             top: ${top}px;
@@ -305,44 +458,109 @@ function createOverlaysForImage(img, blocks) {
     });
 }
 
-// --- Calcular tamaño de fuente óptimo ---
+// --- Calcular tamano de fuente optimo ---
 function calculateFontSize(text, width, height) {
-    const baseSize = 14;
     const minSize = 8;
-    const maxSize = 18;
+    const maxSize = 16;
 
-    // Área disponible
     const area = (width - 8) * (height - 4);
     const charCount = text.length;
-
-    // Estimar tamaño basado en área por caracter
     const areaPerChar = area / charCount;
-    let fontSize = Math.sqrt(areaPerChar) * 0.9;
+    let fontSize = Math.sqrt(areaPerChar) * 0.85;
 
-    // Limitar al rango permitido
-    fontSize = Math.max(minSize, Math.min(maxSize, fontSize));
-
-    return Math.round(fontSize);
+    return Math.round(Math.max(minSize, Math.min(maxSize, fontSize)));
 }
 
-// --- Detener traducción ---
+// --- Observador de mutaciones para imagenes dinamicas ---
+function startObserver() {
+    if (observer) observer.disconnect();
+
+    observer = new MutationObserver((mutations) => {
+        if (!isTranslationActive) return;
+
+        let newImages = [];
+
+        mutations.forEach((mutation) => {
+            mutation.addedNodes.forEach((node) => {
+                if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+                // Si es una imagen
+                if (node.tagName === 'IMG' && isValidImage(node)) {
+                    newImages.push(node);
+                }
+
+                // Buscar imagenes dentro del nodo anadido
+                if (node.querySelectorAll) {
+                    node.querySelectorAll('img').forEach(img => {
+                        if (isValidImage(img)) {
+                            newImages.push(img);
+                        }
+                    });
+                }
+            });
+
+            // Tambien detectar cambios de src en imagenes existentes
+            if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
+                const img = mutation.target;
+                if (img.tagName === 'IMG' && isValidImage(img)) {
+                    // Resetear procesamiento si cambio el src
+                    const imageId = getImageId(img);
+                    if (!processedImages.has(imageId)) {
+                        newImages.push(img);
+                    }
+                }
+            }
+        });
+
+        if (newImages.length > 0) {
+            console.log(`Detectadas ${newImages.length} nuevas imagenes`);
+            // Esperar un poco para que carguen
+            setTimeout(async () => {
+                await waitForImagesToLoad(newImages);
+                processingQueue.push(...newImages);
+                if (activeProcessing === 0) {
+                    processQueue();
+                }
+            }, 1000);
+        }
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['src', 'data-src']
+    });
+
+    console.log('Observador de mutaciones iniciado');
+}
+
+// --- Detener traduccion ---
 function stopTranslationProcess() {
     console.log("Deteniendo proceso y limpiando overlays");
     isTranslationActive = false;
     processingQueue = [];
 
+    if (observer) {
+        observer.disconnect();
+        observer = null;
+    }
+
     // Eliminar overlays
     document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach(el => el.remove());
 
-    // Limpiar marcas de procesado
-    document.querySelectorAll('img[data-manhwa-processed]').forEach(img => {
-        img.removeAttribute('data-manhwa-processed');
-    });
+    // Limpiar estado
+    processedImages.clear();
 
     hidePopupProgress();
 }
 
-// --- Comunicación con popup ---
+// --- Utilidades ---
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// --- Comunicacion con popup ---
 function updatePopupProgress(statusMsg, progressPercent) {
     chrome.runtime.sendMessage({
         type: 'PROGRESS_UPDATE',
