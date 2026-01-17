@@ -1,5 +1,5 @@
 // background.js - Service Worker
-// Conecta con el servidor local de OCR (EasyOCR)
+// Descarga imagenes (sin CORS) y las envia al servidor OCR
 
 const DEFAULT_SERVER_URL = 'http://localhost:5000';
 
@@ -19,12 +19,16 @@ chrome.runtime.onInstalled.addListener((details) => {
     });
 });
 
-// --- Escuchar mensajes del content script ---
+// --- Escuchar mensajes ---
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === 'processImage') {
-        handleProcessImage(request.imageData, request.targetLang)
+    if (request.action === 'processImageUrl') {
+        // Descargar imagen y procesarla
+        handleProcessImageUrl(request.imageUrl, request.targetLang)
             .then(result => sendResponse({ success: true, data: result }))
-            .catch(error => sendResponse({ success: false, error: error.message }));
+            .catch(error => {
+                console.error('Error en processImageUrl:', error);
+                sendResponse({ success: false, error: error.message });
+            });
         return true;
     }
 
@@ -53,8 +57,7 @@ async function checkServerHealth() {
 
     try {
         const response = await fetch(`${serverUrl}/health`, {
-            method: 'GET',
-            timeout: 5000
+            method: 'GET'
         });
 
         if (response.ok) {
@@ -67,11 +70,22 @@ async function checkServerHealth() {
     }
 }
 
-// --- Procesar imagen ---
-async function handleProcessImage(imageBase64, targetLang) {
+// --- Descargar imagen y procesarla ---
+async function handleProcessImageUrl(imageUrl, targetLang) {
+    console.log(`Descargando imagen: ${imageUrl}`);
+
+    // 1. Descargar la imagen (el service worker no tiene restricciones CORS)
+    const imageBase64 = await downloadImageAsBase64(imageUrl);
+
+    if (!imageBase64) {
+        throw new Error('No se pudo descargar la imagen');
+    }
+
+    console.log(`Imagen descargada: ${Math.round(imageBase64.length / 1024)}KB`);
+
+    // 2. Enviar al servidor OCR
     const serverUrl = await getServerUrl();
 
-    // Llamar al servidor local de OCR
     const response = await fetch(`${serverUrl}/ocr`, {
         method: 'POST',
         headers: {
@@ -97,4 +111,36 @@ async function handleProcessImage(imageBase64, targetLang) {
     return { blocks: data.blocks || [] };
 }
 
-console.log("Background script iniciado - Traductor Manhwa v2.0 (EasyOCR)");
+// --- Descargar imagen como base64 ---
+async function downloadImageAsBase64(url) {
+    try {
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            console.error(`Error descargando imagen: HTTP ${response.status}`);
+            return null;
+        }
+
+        const blob = await response.blob();
+
+        // Convertir blob a base64
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const dataUrl = reader.result;
+                if (dataUrl && dataUrl.includes(',')) {
+                    resolve(dataUrl.split(',')[1]);
+                } else {
+                    resolve(null);
+                }
+            };
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+        });
+    } catch (error) {
+        console.error('Error en downloadImageAsBase64:', error);
+        return null;
+    }
+}
+
+console.log("Background script iniciado - Traductor Manhwa v3.2");

@@ -1,7 +1,7 @@
 // content.js - Script de contenido
-// Detecta imagenes, las convierte a base64 y las envia al servidor para OCR/traduccion
+// Detecta imagenes y envia sus URLs al background para procesamiento
 
-console.log("Content script v3.2 (EasyOCR) cargado - Traductor Manhwa");
+console.log("Content script v3.3 (EasyOCR) cargado - Traductor Manhwa");
 
 // --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
@@ -111,7 +111,7 @@ function findAllImages() {
         }
     });
 
-    console.log(`Total imagenes encontradas: ${images.length}`);
+    console.log(`Total imagenes validas: ${images.length}`);
     return images;
 }
 
@@ -119,6 +119,9 @@ function findAllImages() {
 function isValidImage(img) {
     const src = getRealImageSrc(img);
     if (!src) return false;
+
+    // Ignorar data URLs (ya estan en base64, probablemente son iconos)
+    if (src.startsWith('data:')) return false;
 
     // Ignorar imagenes ya procesadas (tienen wrapper)
     if (img.parentElement && img.parentElement.classList.contains(WRAPPER_CLASS)) {
@@ -143,7 +146,7 @@ function isValidImage(img) {
         return false;
     }
 
-    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads.', 'pixel', 'tracker', 'doubleclick'];
+    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads.', 'pixel', 'tracker', 'doubleclick', 'adsrv', 'adserver'];
     if (ignoreDomains.some(d => src.toLowerCase().includes(d))) {
         return false;
     }
@@ -166,21 +169,13 @@ function getRealImageSrc(img) {
 
 // --- Generar ID unico para imagen ---
 function getImageId(element) {
-    if (element.tagName === 'IMG') {
-        return getRealImageSrc(element) || element.outerHTML.substring(0, 100);
-    }
-    return element.outerHTML.substring(0, 100);
+    return getRealImageSrc(element) || element.outerHTML.substring(0, 100);
 }
 
 // --- Esperar a que las imagenes carguen ---
 function waitForImagesToLoad(images) {
     const promises = images.map(img => {
         return new Promise((resolve) => {
-            if (img.tagName !== 'IMG') {
-                resolve();
-                return;
-            }
-
             if (img.complete && img.naturalWidth > 0) {
                 resolve();
                 return;
@@ -216,14 +211,14 @@ async function processQueue() {
             continue;
         }
 
-        const element = processingQueue.shift();
-        const imageId = getImageId(element);
+        const img = processingQueue.shift();
+        const imageId = getImageId(img);
 
         if (processedImages.has(imageId)) continue;
         processedImages.add(imageId);
 
         activeProcessing++;
-        processElement(element).finally(() => {
+        processImage(img).finally(() => {
             activeProcessing--;
             stats.images++;
 
@@ -244,36 +239,30 @@ async function processQueue() {
     }
 }
 
-// --- Procesar un elemento ---
-async function processElement(element) {
+// --- Procesar una imagen ---
+async function processImage(img) {
     try {
-        if (element.tagName !== 'IMG') {
-            console.log('Solo se procesan elementos IMG');
-            return;
-        }
-
         // Verificar tamano
-        const maxDim = Math.max(element.naturalWidth, element.naturalHeight);
-        const area = element.naturalWidth * element.naturalHeight;
+        const maxDim = Math.max(img.naturalWidth, img.naturalHeight);
+        const area = img.naturalWidth * img.naturalHeight;
         if (maxDim < MIN_IMAGE_DIMENSION || area < MIN_IMAGE_AREA) {
-            console.log(`Imagen muy pequena: ${element.naturalWidth}x${element.naturalHeight}`);
+            console.log(`Imagen muy pequena: ${img.naturalWidth}x${img.naturalHeight}`);
             return;
         }
 
-        // Obtener base64
-        const imageBase64 = await imageToBase64(element);
-
-        if (!imageBase64) {
-            console.warn('No se pudo obtener base64 de la imagen');
+        // Obtener URL de la imagen
+        const imageUrl = getRealImageSrc(img);
+        if (!imageUrl) {
+            console.warn('No se pudo obtener URL de la imagen');
             return;
         }
 
-        console.log(`Enviando imagen al servidor (${Math.round(imageBase64.length/1024)}KB)...`);
+        console.log(`Procesando imagen: ${imageUrl.substring(0, 80)}...`);
 
-        // Enviar al background
+        // Enviar URL al background para descarga y OCR
         const response = await chrome.runtime.sendMessage({
-            action: 'processImage',
-            imageData: imageBase64,
+            action: 'processImageUrl',
+            imageUrl: imageUrl,
             targetLang: targetLanguage
         });
 
@@ -285,90 +274,25 @@ async function processElement(element) {
 
         if (blocks && blocks.length > 0) {
             console.log(`Recibidos ${blocks.length} bloques de texto`);
-            createOverlaysForImage(element, blocks);
+            createOverlaysForImage(img, blocks);
             stats.blocks += blocks.length;
         } else {
             console.log('No se detecto texto en la imagen');
         }
 
     } catch (error) {
-        console.error('Error procesando elemento:', error.message);
-    }
-}
-
-// --- Convertir imagen a base64 ---
-async function imageToBase64(img) {
-    // Primero intentar con canvas
-    try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-
-        canvas.width = img.naturalWidth;
-        canvas.height = img.naturalHeight;
-        ctx.drawImage(img, 0, 0);
-
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        const base64 = dataUrl.split(',')[1];
-
-        if (base64 && base64.length > 100) {
-            return base64;
-        }
-    } catch (error) {
-        console.warn('Error canvas (CORS), intentando fetch...');
-    }
-
-    // Fallback: fetch
-    const src = getRealImageSrc(img);
-    if (!src) return null;
-
-    return await fetchImageAsBase64(src);
-}
-
-// --- Fetch imagen como base64 ---
-async function fetchImageAsBase64(url) {
-    try {
-        // Intentar sin credenciales primero
-        let response = await fetch(url, {
-            mode: 'cors',
-            credentials: 'omit'
-        });
-
-        if (!response.ok) {
-            // Intentar con credenciales
-            response = await fetch(url, {
-                mode: 'cors',
-                credentials: 'include'
-            });
-        }
-
-        if (!response.ok) {
-            console.error(`Fetch fallo con status: ${response.status}`);
-            return null;
-        }
-
-        const blob = await response.blob();
-
-        return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-                const result = reader.result;
-                if (result && result.includes(',')) {
-                    resolve(result.split(',')[1]);
-                } else {
-                    resolve(null);
-                }
-            };
-            reader.onerror = () => resolve(null);
-            reader.readAsDataURL(blob);
-        });
-    } catch (error) {
-        console.error('Error fetch imagen:', error.message);
-        return null;
+        console.error('Error procesando imagen:', error.message);
     }
 }
 
 // --- Crear overlays para una imagen ---
 function createOverlaysForImage(img, blocks) {
+    // Verificar que la imagen tiene dimensiones
+    if (img.offsetWidth === 0 || img.offsetHeight === 0) {
+        console.warn('Imagen sin dimensiones visibles, saltando overlays');
+        return;
+    }
+
     // Crear wrapper alrededor de la imagen si no existe
     let wrapper = img.parentElement;
 
@@ -376,7 +300,6 @@ function createOverlaysForImage(img, blocks) {
         wrapper = document.createElement('div');
         wrapper.classList.add(WRAPPER_CLASS);
 
-        // Copiar estilos relevantes de la imagen
         const imgStyle = getComputedStyle(img);
         wrapper.style.cssText = `
             position: relative;
@@ -386,11 +309,9 @@ function createOverlaysForImage(img, blocks) {
             margin: ${imgStyle.margin};
         `;
 
-        // Insertar wrapper
         img.parentNode.insertBefore(wrapper, img);
         wrapper.appendChild(img);
 
-        // Resetear margenes de la imagen
         img.style.margin = '0';
         img.style.display = 'block';
         img.style.width = '100%';
@@ -400,8 +321,9 @@ function createOverlaysForImage(img, blocks) {
     const scaleX = img.offsetWidth / img.naturalWidth;
     const scaleY = img.offsetHeight / img.naturalHeight;
 
-    console.log(`Creando ${blocks.length} overlays (escala: ${scaleX.toFixed(2)}x${scaleY.toFixed(2)})`);
+    console.log(`Creando ${blocks.length} overlays`);
     console.log(`Imagen: ${img.naturalWidth}x${img.naturalHeight} -> ${img.offsetWidth}x${img.offsetHeight}`);
+    console.log(`Escala: ${scaleX.toFixed(3)}x${scaleY.toFixed(3)}`);
 
     blocks.forEach((block, index) => {
         if (!block || !block.bbox || !block.translatedText) return;
@@ -410,13 +332,12 @@ function createOverlaysForImage(img, blocks) {
         const overlay = document.createElement('div');
         overlay.classList.add(OVERLAY_CLASS);
 
-        // Posicion relativa a la imagen
         const top = block.bbox.y0 * scaleY;
         const left = block.bbox.x0 * scaleX;
         const width = (block.bbox.x1 - block.bbox.x0) * scaleX;
         const height = (block.bbox.y1 - block.bbox.y0) * scaleY;
 
-        console.log(`Overlay ${index}: top=${top.toFixed(0)}, left=${left.toFixed(0)}, ${width.toFixed(0)}x${height.toFixed(0)}`);
+        console.log(`Overlay ${index}: "${block.translatedText.substring(0, 30)}..." @ (${left.toFixed(0)}, ${top.toFixed(0)}) ${width.toFixed(0)}x${height.toFixed(0)}`);
 
         overlay.style.cssText = `
             position: absolute;
@@ -541,7 +462,6 @@ function stopTranslationProcess() {
         const img = wrapper.querySelector('img');
         if (img) {
             wrapper.parentNode.insertBefore(img, wrapper);
-            // Restaurar estilos originales
             img.style.margin = '';
             img.style.display = '';
             img.style.width = '';
