@@ -1,7 +1,7 @@
 // content.js - Script de contenido
 // Detecta imagenes y envia sus URLs al background para procesamiento
 
-console.log("Content script v4.0 (Multi-idioma) cargado - Traductor de Imagenes");
+console.log("Content script v4.1 (Lazy-load support) cargado - Traductor de Imagenes");
 
 // --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
@@ -20,6 +20,7 @@ let processingQueue = [];
 let activeProcessing = 0;
 let stats = { images: 0, blocks: 0 };
 let observer = null;
+let intersectionObserver = null;
 
 // --- Cargar estado inicial ---
 chrome.storage.sync.get(['isEnabled', 'sourceLanguage', 'targetLanguage'], (result) => {
@@ -81,7 +82,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // --- Funcion principal ---
 async function startTranslationProcess() {
-    console.log(`Iniciando proceso de traduccion (idioma: ${targetLanguage})`);
+    console.log(`Iniciando proceso de traduccion (origen: ${sourceLanguage}, destino: ${targetLanguage})`);
     stats = { images: 0, blocks: 0 };
     processedImages.clear();
 
@@ -89,6 +90,7 @@ async function startTranslationProcess() {
 
     await scanAndProcessImages();
     startObserver();
+    startIntersectionObserver();  // Para imagenes lazy-load
 }
 
 // --- Escanear y procesar todas las imagenes ---
@@ -406,6 +408,74 @@ function calculateFontSize(text, width, height) {
     return Math.round(Math.max(minSize, Math.min(maxSize, fontSize)));
 }
 
+// --- Observador de interseccion (para imagenes lazy-load) ---
+function startIntersectionObserver() {
+    if (intersectionObserver) intersectionObserver.disconnect();
+
+    intersectionObserver = new IntersectionObserver((entries) => {
+        if (!isTranslationActive) return;
+
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const img = entry.target;
+                const imageId = getImageId(img);
+
+                // Si ya fue procesada, dejar de observarla
+                if (processedImages.has(imageId)) {
+                    intersectionObserver.unobserve(img);
+                    return;
+                }
+
+                // Esperar a que la imagen cargue completamente
+                if (img.complete && img.naturalWidth > 0) {
+                    processLazyImage(img);
+                } else {
+                    img.addEventListener('load', () => {
+                        processLazyImage(img);
+                    }, { once: true });
+                }
+            }
+        });
+    }, {
+        rootMargin: '200px',  // Empezar a cargar 200px antes de entrar en viewport
+        threshold: 0.01
+    });
+
+    // Observar todas las imagenes de la pagina
+    document.querySelectorAll('img').forEach(img => {
+        if (!processedImages.has(getImageId(img))) {
+            intersectionObserver.observe(img);
+        }
+    });
+
+    console.log('Observador de interseccion iniciado (lazy-load)');
+}
+
+// --- Procesar imagen lazy-loaded ---
+async function processLazyImage(img) {
+    if (!isTranslationActive) return;
+
+    const imageId = getImageId(img);
+    if (processedImages.has(imageId)) return;
+
+    // Validar que cumple los requisitos
+    if (!isValidImage(img)) return;
+
+    // Verificar que tiene dimensiones
+    if (img.naturalWidth < MIN_IMAGE_DIMENSION || img.naturalHeight < MIN_IMAGE_DIMENSION) return;
+    if (img.naturalWidth * img.naturalHeight < MIN_IMAGE_AREA) return;
+
+    console.log(`Imagen lazy detectada en viewport: ${img.src.substring(0, 60)}...`);
+
+    // Agregar a la cola si no esta ya
+    if (!processingQueue.includes(img)) {
+        processingQueue.push(img);
+        if (activeProcessing === 0) {
+            processQueue();
+        }
+    }
+}
+
 // --- Observador de mutaciones ---
 function startObserver() {
     if (observer) observer.disconnect();
@@ -421,12 +491,19 @@ function startObserver() {
 
                 if (node.tagName === 'IMG' && isValidImage(node)) {
                     newImages.push(node);
+                    // Tambien observar con IntersectionObserver
+                    if (intersectionObserver) {
+                        intersectionObserver.observe(node);
+                    }
                 }
 
                 if (node.querySelectorAll) {
                     node.querySelectorAll('img').forEach(img => {
                         if (isValidImage(img)) {
                             newImages.push(img);
+                            if (intersectionObserver) {
+                                intersectionObserver.observe(img);
+                            }
                         }
                     });
                 }
@@ -445,7 +522,7 @@ function startObserver() {
         });
 
         if (newImages.length > 0) {
-            console.log(`Detectadas ${newImages.length} nuevas imagenes`);
+            console.log(`Detectadas ${newImages.length} nuevas imagenes (MutationObserver)`);
             setTimeout(async () => {
                 await waitForImagesToLoad(newImages);
                 processingQueue.push(...newImages);
@@ -475,6 +552,11 @@ function stopTranslationProcess() {
     if (observer) {
         observer.disconnect();
         observer = null;
+    }
+
+    if (intersectionObserver) {
+        intersectionObserver.disconnect();
+        intersectionObserver = null;
     }
 
     // Eliminar overlays
