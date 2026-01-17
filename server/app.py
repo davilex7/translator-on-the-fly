@@ -97,7 +97,7 @@ def ocr_endpoint():
         results = reader.readtext(
             image,
             detail=1,          # Devolver coordenadas
-            paragraph=True,    # Agrupar en parrafos
+            paragraph=False,   # Sin agrupar (devuelve 3 valores)
             min_size=10,       # Tamano minimo de texto
             text_threshold=0.5 # Umbral de confianza
         )
@@ -107,7 +107,10 @@ def ocr_endpoint():
         texts_to_translate = []
 
         for result in results:
-            bbox_points, text, confidence = result
+            # EasyOCR devuelve (bbox, text, confidence)
+            bbox_points = result[0]
+            text = result[1]
+            confidence = result[2] if len(result) > 2 else 0.9
 
             if not text or not text.strip():
                 continue
