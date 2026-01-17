@@ -1,15 +1,16 @@
 {
   "manifest_version": 3,
   "name": "Traductor de Manhwa",
-  "version": "1.0.0",
-  "description": "Traduce texto coreano en imágenes de manhwa usando Google Vision API",
+  "version": "2.0.0",
+  "description": "Traduce texto coreano en imagenes de manhwa usando EasyOCR (servidor local)",
   "permissions": [
     "activeTab",
     "scripting",
     "storage"
   ],
   "host_permissions": [
-    "https://vision.googleapis.com/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
     "https://api.mymemory.translated.net/*"
   ],
   "content_security_policy": {
