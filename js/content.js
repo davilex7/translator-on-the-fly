@@ -5,10 +5,10 @@ console.log("Content script v3.0 (EasyOCR) cargado - Traductor Manhwa");
 
 // --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
-const MIN_IMAGE_WIDTH = 200;   // Minimo para considerar imagen de manhwa
-const MIN_IMAGE_HEIGHT = 200;
+const MIN_IMAGE_DIMENSION = 100;  // Al menos una dimension debe ser >= esto
+const MIN_IMAGE_AREA = 50000;     // Area minima (ej: 100x500 = 50000)
 const MAX_CONCURRENT = 2;
-const PROCESS_DELAY = 500;     // Delay entre imagenes para no saturar
+const PROCESS_DELAY = 500;        // Delay entre imagenes para no saturar
 
 // --- Estado ---
 let isTranslationActive = false;
@@ -119,7 +119,9 @@ function findAllImages() {
 
     // 2. Buscar imagenes en canvas (algunos sitios renderizan asi)
     document.querySelectorAll('canvas').forEach(canvas => {
-        if (canvas.width >= MIN_IMAGE_WIDTH && canvas.height >= MIN_IMAGE_HEIGHT) {
+        const maxDim = Math.max(canvas.width, canvas.height);
+        const area = canvas.width * canvas.height;
+        if (maxDim >= MIN_IMAGE_DIMENSION && area >= MIN_IMAGE_AREA) {
             images.push(canvas);
         }
     });
@@ -129,7 +131,9 @@ function findAllImages() {
         const bg = getComputedStyle(el).backgroundImage;
         if (bg && bg !== 'none' && bg.startsWith('url(')) {
             const rect = el.getBoundingClientRect();
-            if (rect.width >= MIN_IMAGE_WIDTH && rect.height >= MIN_IMAGE_HEIGHT) {
+            const maxDim = Math.max(rect.width, rect.height);
+            const area = rect.width * rect.height;
+            if (maxDim >= MIN_IMAGE_DIMENSION && area >= MIN_IMAGE_AREA) {
                 // Marcar elemento con su URL de fondo
                 el.dataset.bgImage = bg.slice(5, -2); // Extraer URL
                 images.push(el);
@@ -147,26 +151,32 @@ function isValidImage(img) {
     const src = getRealImageSrc(img);
     if (!src) return false;
 
-    // Ignorar imagenes muy pequenas (iconos, avatares, etc.)
+    // Obtener dimensiones
     const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width')) || 0;
     const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height')) || 0;
 
     // Si tiene dimensiones conocidas, verificar tamano
     if (width > 0 && height > 0) {
-        if (width < MIN_IMAGE_WIDTH || height < MIN_IMAGE_HEIGHT) {
+        // Permitir imagenes largas/finas tipicas de manhwa (ej: 150x2000)
+        // Al menos una dimension debe ser >= MIN_IMAGE_DIMENSION
+        // Y el area total debe ser >= MIN_IMAGE_AREA
+        const maxDimension = Math.max(width, height);
+        const area = width * height;
+
+        if (maxDimension < MIN_IMAGE_DIMENSION || area < MIN_IMAGE_AREA) {
             return false;
         }
     }
 
     // Ignorar imagenes con clases tipicas de UI
-    const classList = img.className.toLowerCase();
-    const ignoreClasses = ['avatar', 'icon', 'logo', 'thumb', 'profile', 'emoji', 'ad', 'banner'];
+    const classList = (img.className || '').toLowerCase();
+    const ignoreClasses = ['avatar', 'icon', 'logo', 'thumb', 'profile', 'emoji', 'ad-', 'ads-', 'banner', 'button', 'nav'];
     if (ignoreClasses.some(c => classList.includes(c))) {
         return false;
     }
 
     // Ignorar imagenes de tracking/ads por URL
-    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads', 'pixel', 'tracker'];
+    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads.', 'pixel', 'tracker', 'doubleclick'];
     if (ignoreDomains.some(d => src.toLowerCase().includes(d))) {
         return false;
     }
@@ -280,8 +290,10 @@ async function processElement(element) {
         let imageBase64;
 
         if (element.tagName === 'IMG') {
-            // Verificar tamano real
-            if (element.naturalWidth < MIN_IMAGE_WIDTH || element.naturalHeight < MIN_IMAGE_HEIGHT) {
+            // Verificar tamano real (permitir imagenes largas/finas)
+            const maxDim = Math.max(element.naturalWidth, element.naturalHeight);
+            const area = element.naturalWidth * element.naturalHeight;
+            if (maxDim < MIN_IMAGE_DIMENSION || area < MIN_IMAGE_AREA) {
                 console.log(`Imagen muy pequena: ${element.naturalWidth}x${element.naturalHeight}`);
                 return;
             }
