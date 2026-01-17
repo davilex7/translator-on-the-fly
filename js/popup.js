@@ -3,6 +3,7 @@
 // --- Elementos del DOM ---
 const toggleSwitch = document.getElementById('toggle');
 const statusText = document.getElementById('status');
+const sourceLanguageSelect = document.getElementById('source-language-select');
 const languageSelect = document.getElementById('language-select');
 const progressSection = document.getElementById('progress-section');
 const progressStatus = document.getElementById('progress-status');
@@ -21,12 +22,14 @@ let serverOnline = false;
 
 // --- Cargar estado inicial ---
 document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.sync.get(['isEnabled', 'targetLanguage', 'serverUrl'], (result) => {
+    chrome.storage.sync.get(['isEnabled', 'sourceLanguage', 'targetLanguage', 'serverUrl'], (result) => {
         const isEnabled = result.isEnabled || false;
+        const sourceLanguage = result.sourceLanguage || 'ko';
         const targetLanguage = result.targetLanguage || 'es';
         const serverUrl = result.serverUrl || 'http://localhost:5000';
 
         toggleSwitch.checked = isEnabled;
+        sourceLanguageSelect.value = sourceLanguage;
         languageSelect.value = targetLanguage;
         serverUrlInput.value = serverUrl;
 
@@ -108,7 +111,20 @@ toggleSwitch.addEventListener('change', () => {
     });
 });
 
-// --- Cambio de idioma ---
+// --- Cambio de idioma origen ---
+sourceLanguageSelect.addEventListener('change', () => {
+    const selectedSourceLanguage = sourceLanguageSelect.value;
+    chrome.storage.sync.set({ sourceLanguage: selectedSourceLanguage }, () => {
+        if (toggleSwitch.checked) {
+            sendMessageToContentScript({
+                action: "setSourceLanguage",
+                payload: selectedSourceLanguage
+            });
+        }
+    });
+});
+
+// --- Cambio de idioma destino ---
 languageSelect.addEventListener('change', () => {
     const selectedLanguage = languageSelect.value;
     chrome.storage.sync.set({ targetLanguage: selectedLanguage }, () => {

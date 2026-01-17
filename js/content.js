@@ -1,18 +1,19 @@
 // content.js - Script de contenido
 // Detecta imagenes y envia sus URLs al background para procesamiento
 
-console.log("Content script v3.3 (EasyOCR) cargado - Traductor Manhwa");
+console.log("Content script v4.0 (Multi-idioma) cargado - Traductor de Imagenes");
 
 // --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
 const WRAPPER_CLASS = 'manhwa-translation-wrapper';
-const MIN_IMAGE_DIMENSION = 100;
-const MIN_IMAGE_AREA = 50000;
+const MIN_IMAGE_DIMENSION = 50;   // Reducido para aceptar mas imagenes
+const MIN_IMAGE_AREA = 10000;     // Reducido para aceptar mas imagenes (ej. 100x100)
 const MAX_CONCURRENT = 2;
 const PROCESS_DELAY = 500;
 
 // --- Estado ---
 let isTranslationActive = false;
+let sourceLanguage = 'ko';
 let targetLanguage = 'es';
 let processedImages = new Set();
 let processingQueue = [];
@@ -21,10 +22,11 @@ let stats = { images: 0, blocks: 0 };
 let observer = null;
 
 // --- Cargar estado inicial ---
-chrome.storage.sync.get(['isEnabled', 'targetLanguage'], (result) => {
+chrome.storage.sync.get(['isEnabled', 'sourceLanguage', 'targetLanguage'], (result) => {
     isTranslationActive = result.isEnabled || false;
+    sourceLanguage = result.sourceLanguage || 'ko';
     targetLanguage = result.targetLanguage || 'es';
-    console.log(`Estado inicial: activo=${isTranslationActive}, idioma=${targetLanguage}`);
+    console.log(`Estado inicial: activo=${isTranslationActive}, origen=${sourceLanguage}, destino=${targetLanguage}`);
     if (isTranslationActive) {
         startTranslationProcess();
     }
@@ -50,7 +52,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "setLanguage") {
         targetLanguage = request.payload;
-        console.log(`Idioma cambiado a: ${targetLanguage}`);
+        console.log(`Idioma destino cambiado a: ${targetLanguage}`);
 
         if (isTranslationActive) {
             stopTranslationProcess();
@@ -58,6 +60,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ status: "reprocessing" });
         } else {
             sendResponse({ status: "languageSet" });
+        }
+        return true;
+    }
+
+    if (request.action === "setSourceLanguage") {
+        sourceLanguage = request.payload;
+        console.log(`Idioma origen cambiado a: ${sourceLanguage}`);
+
+        if (isTranslationActive) {
+            stopTranslationProcess();
+            startTranslationProcess();
+            sendResponse({ status: "reprocessing" });
+        } else {
+            sendResponse({ status: "sourceLanguageSet" });
         }
         return true;
     }
@@ -140,13 +156,15 @@ function isValidImage(img) {
         }
     }
 
+    // Solo ignorar elementos claramente no-contenido (iconos, avatares, anuncios)
     const classList = (img.className || '').toLowerCase();
-    const ignoreClasses = ['avatar', 'icon', 'logo', 'thumb', 'profile', 'emoji', 'ad-', 'ads-', 'banner', 'button', 'nav'];
+    const ignoreClasses = ['icon', 'avatar', 'emoji', 'ad-', 'ads-'];
     if (ignoreClasses.some(c => classList.includes(c))) {
         return false;
     }
 
-    const ignoreDomains = ['google', 'facebook', 'analytics', 'ads.', 'pixel', 'tracker', 'doubleclick', 'adsrv', 'adserver'];
+    // Ignorar dominios de tracking/anuncios
+    const ignoreDomains = ['analytics', 'ads.', 'pixel', 'tracker', 'doubleclick'];
     if (ignoreDomains.some(d => src.toLowerCase().includes(d))) {
         return false;
     }
@@ -263,6 +281,7 @@ async function processImage(img) {
         const response = await chrome.runtime.sendMessage({
             action: 'processImageUrl',
             imageUrl: imageUrl,
+            sourceLang: sourceLanguage,
             targetLang: targetLanguage
         });
 

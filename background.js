@@ -6,9 +6,12 @@ const DEFAULT_SERVER_URL = 'http://localhost:5000';
 // --- Inicializacion ---
 chrome.runtime.onInstalled.addListener((details) => {
     console.log("Extension Traductor Manhwa instalada:", details.reason);
-    chrome.storage.sync.get(['isEnabled', 'targetLanguage', 'serverUrl'], (result) => {
+    chrome.storage.sync.get(['isEnabled', 'sourceLanguage', 'targetLanguage', 'serverUrl'], (result) => {
         if (result.isEnabled === undefined) {
             chrome.storage.sync.set({ isEnabled: false });
+        }
+        if (result.sourceLanguage === undefined) {
+            chrome.storage.sync.set({ sourceLanguage: 'ko' });
         }
         if (result.targetLanguage === undefined) {
             chrome.storage.sync.set({ targetLanguage: 'es' });
@@ -23,7 +26,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'processImageUrl') {
         // Descargar imagen y procesarla
-        handleProcessImageUrl(request.imageUrl, request.targetLang)
+        handleProcessImageUrl(request.imageUrl, request.sourceLang, request.targetLang)
             .then(result => sendResponse({ success: true, data: result }))
             .catch(error => {
                 // Solo log en modo debug - errores de descarga son comunes y esperados
@@ -71,7 +74,7 @@ async function checkServerHealth() {
 }
 
 // --- Descargar imagen y procesarla ---
-async function handleProcessImageUrl(imageUrl, targetLang) {
+async function handleProcessImageUrl(imageUrl, sourceLang, targetLang) {
     console.log(`Descargando imagen: ${imageUrl}`);
 
     // 1. Descargar la imagen (el service worker no tiene restricciones CORS)
@@ -93,6 +96,7 @@ async function handleProcessImageUrl(imageUrl, targetLang) {
         },
         body: JSON.stringify({
             image: imageBase64,
+            sourceLang: sourceLang,
             targetLang: targetLang
         })
     });
@@ -143,4 +147,4 @@ async function downloadImageAsBase64(url) {
     }
 }
 
-console.log("Background script iniciado - Traductor Manhwa v3.2");
+console.log("Background script iniciado - Traductor v4.0 (Multi-idioma)");

@@ -29,10 +29,27 @@ MAX_SFX_LENGTH = 3            # Texto <= a esto puede ser SFX
 SFX_ASPECT_RATIO = 4.0        # Ratio aspecto extremo = probable SFX
 GROUP_DISTANCE_FACTOR = 2.0   # Factor para distancia de agrupacion
 
-# Inicializar EasyOCR
+# Inicializar EasyOCR - un reader por cada grupo de idiomas
 print("Cargando modelos de EasyOCR (puede tardar la primera vez)...")
-reader = easyocr.Reader(['ko', 'en'], gpu=False)
-print("Modelos cargados correctamente.")
+print("  - Cargando modelo Coreano...")
+reader_ko = easyocr.Reader(['ko', 'en'], gpu=False)
+print("  - Cargando modelo Japones...")
+reader_ja = easyocr.Reader(['ja', 'en'], gpu=False)
+print("  - Cargando modelo Latin (Ingles/Espanol)...")
+reader_latin = easyocr.Reader(['en', 'es'], gpu=False)
+print("Todos los modelos cargados correctamente.")
+
+# Mapeo de idiomas a readers
+READERS = {
+    'ko': reader_ko,
+    'ja': reader_ja,
+    'en': reader_latin,
+    'es': reader_latin
+}
+
+def get_reader(source_lang):
+    """Obtiene el reader apropiado para el idioma de origen."""
+    return READERS.get(source_lang, reader_ko)
 
 # --- API de traduccion MyMemory ---
 MYMEMORY_API_URL = "https://api.mymemory.translated.net/get"
@@ -281,6 +298,7 @@ def ocr_endpoint():
             return jsonify({"error": "Falta el campo 'image' en la peticion"}), 400
 
         image_base64 = data['image']
+        source_lang = data.get('sourceLang', 'ko')
         target_lang = data.get('targetLang', 'es')
 
         # Decodificar imagen
@@ -294,10 +312,13 @@ def ocr_endpoint():
             return jsonify({"error": f"Error decodificando imagen: {str(e)}"}), 400
 
         image_width, image_height = image.size
-        print(f"Procesando imagen ({image_width}x{image_height})...")
+        print(f"Procesando imagen ({image_width}x{image_height}), idioma origen: {source_lang}...")
 
         # Convertir PIL a numpy array para EasyOCR
         image_np = np.array(image)
+
+        # Obtener reader apropiado para el idioma de origen
+        reader = get_reader(source_lang)
 
         # Ejecutar OCR con EasyOCR
         results = reader.readtext(
@@ -362,7 +383,7 @@ def ocr_endpoint():
         if grouped_blocks:
             # Traducir cada bocadillo por separado para mejor contexto
             for block in grouped_blocks:
-                translated = translate_text(block['text'], target_lang)
+                translated = translate_text(block['text'], target_lang, source_lang)
                 block['translatedText'] = translated
 
         return jsonify({
@@ -379,13 +400,14 @@ def ocr_endpoint():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({"status": "healthy", "ocr": "easyocr", "version": "3.0"})
+    return jsonify({"status": "healthy", "ocr": "easyocr", "version": "4.0", "languages": ["ko", "ja", "en", "es"]})
 
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     print(f"\n{'='*50}")
-    print(f"  Servidor OCR Manhwa v3.0")
+    print(f"  Servidor OCR v4.0 - Multi-idioma")
+    print(f"  - Idiomas: Coreano, Japones, Ingles, Espanol")
     print(f"  - Agrupacion de texto en bocadillos")
     print(f"  - Filtrado de SFX")
     print(f"  URL: http://localhost:{port}")
