@@ -1,14 +1,15 @@
 // content.js - Script de contenido
 // Detecta imagenes, las convierte a base64 y las envia al servidor para OCR/traduccion
 
-console.log("Content script v3.0 (EasyOCR) cargado - Traductor Manhwa");
+console.log("Content script v3.2 (EasyOCR) cargado - Traductor Manhwa");
 
 // --- Configuracion ---
 const OVERLAY_CLASS = 'manhwa-translation-overlay';
-const MIN_IMAGE_DIMENSION = 100;  // Al menos una dimension debe ser >= esto
-const MIN_IMAGE_AREA = 50000;     // Area minima (ej: 100x500 = 50000)
+const WRAPPER_CLASS = 'manhwa-translation-wrapper';
+const MIN_IMAGE_DIMENSION = 100;
+const MIN_IMAGE_AREA = 50000;
 const MAX_CONCURRENT = 2;
-const PROCESS_DELAY = 500;        // Delay entre imagenes para no saturar
+const PROCESS_DELAY = 500;
 
 // --- Estado ---
 let isTranslationActive = false;
@@ -70,10 +71,7 @@ async function startTranslationProcess() {
 
     updatePopupProgress("Buscando imagenes...", 10);
 
-    // Buscar imagenes actuales
     await scanAndProcessImages();
-
-    // Observar nuevas imagenes que se anadan al DOM
     startObserver();
 }
 
@@ -88,7 +86,6 @@ async function scanAndProcessImages() {
         return;
     }
 
-    // Filtrar imagenes ya procesadas y agregar a cola
     const newImages = images.filter(img => !processedImages.has(getImageId(img)));
     console.log(`${newImages.length} imagenes nuevas para procesar`);
 
@@ -97,11 +94,9 @@ async function scanAndProcessImages() {
         return;
     }
 
-    // Esperar a que todas las imagenes carguen
     updatePopupProgress("Esperando carga de imagenes...", 15);
     await waitForImagesToLoad(newImages);
 
-    // Procesar
     processingQueue = [...newImages];
     processQueue();
 }
@@ -110,34 +105,9 @@ async function scanAndProcessImages() {
 function findAllImages() {
     const images = [];
 
-    // 1. Buscar todos los <img>
     document.querySelectorAll('img').forEach(img => {
         if (isValidImage(img)) {
             images.push(img);
-        }
-    });
-
-    // 2. Buscar imagenes en canvas (algunos sitios renderizan asi)
-    document.querySelectorAll('canvas').forEach(canvas => {
-        const maxDim = Math.max(canvas.width, canvas.height);
-        const area = canvas.width * canvas.height;
-        if (maxDim >= MIN_IMAGE_DIMENSION && area >= MIN_IMAGE_AREA) {
-            images.push(canvas);
-        }
-    });
-
-    // 3. Buscar divs con background-image grandes
-    document.querySelectorAll('div, section, article').forEach(el => {
-        const bg = getComputedStyle(el).backgroundImage;
-        if (bg && bg !== 'none' && bg.startsWith('url(')) {
-            const rect = el.getBoundingClientRect();
-            const maxDim = Math.max(rect.width, rect.height);
-            const area = rect.width * rect.height;
-            if (maxDim >= MIN_IMAGE_DIMENSION && area >= MIN_IMAGE_AREA) {
-                // Marcar elemento con su URL de fondo
-                el.dataset.bgImage = bg.slice(5, -2); // Extraer URL
-                images.push(el);
-            }
         }
     });
 
@@ -147,19 +117,18 @@ function findAllImages() {
 
 // --- Validar si una imagen es valida para procesar ---
 function isValidImage(img) {
-    // Obtener src real (puede estar en data-src, data-lazy-src, etc.)
     const src = getRealImageSrc(img);
     if (!src) return false;
 
-    // Obtener dimensiones
+    // Ignorar imagenes ya procesadas (tienen wrapper)
+    if (img.parentElement && img.parentElement.classList.contains(WRAPPER_CLASS)) {
+        return false;
+    }
+
     const width = img.naturalWidth || img.width || parseInt(img.getAttribute('width')) || 0;
     const height = img.naturalHeight || img.height || parseInt(img.getAttribute('height')) || 0;
 
-    // Si tiene dimensiones conocidas, verificar tamano
     if (width > 0 && height > 0) {
-        // Permitir imagenes largas/finas tipicas de manhwa (ej: 150x2000)
-        // Al menos una dimension debe ser >= MIN_IMAGE_DIMENSION
-        // Y el area total debe ser >= MIN_IMAGE_AREA
         const maxDimension = Math.max(width, height);
         const area = width * height;
 
@@ -168,14 +137,12 @@ function isValidImage(img) {
         }
     }
 
-    // Ignorar imagenes con clases tipicas de UI
     const classList = (img.className || '').toLowerCase();
     const ignoreClasses = ['avatar', 'icon', 'logo', 'thumb', 'profile', 'emoji', 'ad-', 'ads-', 'banner', 'button', 'nav'];
     if (ignoreClasses.some(c => classList.includes(c))) {
         return false;
     }
 
-    // Ignorar imagenes de tracking/ads por URL
     const ignoreDomains = ['google', 'facebook', 'analytics', 'ads.', 'pixel', 'tracker', 'doubleclick'];
     if (ignoreDomains.some(d => src.toLowerCase().includes(d))) {
         return false;
@@ -186,7 +153,6 @@ function isValidImage(img) {
 
 // --- Obtener src real de imagen (maneja lazy loading) ---
 function getRealImageSrc(img) {
-    // Orden de prioridad para obtener el src
     return img.src ||
            img.dataset.src ||
            img.dataset.lazySrc ||
@@ -202,11 +168,8 @@ function getRealImageSrc(img) {
 function getImageId(element) {
     if (element.tagName === 'IMG') {
         return getRealImageSrc(element) || element.outerHTML.substring(0, 100);
-    } else if (element.tagName === 'CANVAS') {
-        return `canvas-${element.offsetLeft}-${element.offsetTop}-${element.width}x${element.height}`;
-    } else {
-        return element.dataset.bgImage || element.outerHTML.substring(0, 100);
     }
+    return element.outerHTML.substring(0, 100);
 }
 
 // --- Esperar a que las imagenes carguen ---
@@ -223,8 +186,7 @@ function waitForImagesToLoad(images) {
                 return;
             }
 
-            // Esperar carga
-            const timeout = setTimeout(() => resolve(), 10000); // Max 10s
+            const timeout = setTimeout(() => resolve(), 10000);
             img.addEventListener('load', () => {
                 clearTimeout(timeout);
                 resolve();
@@ -234,7 +196,6 @@ function waitForImagesToLoad(images) {
                 resolve();
             }, { once: true });
 
-            // Forzar carga si tiene data-src pero no src
             const realSrc = getRealImageSrc(img);
             if (realSrc && !img.src) {
                 img.src = realSrc;
@@ -273,7 +234,6 @@ async function processQueue() {
         await sleep(PROCESS_DELAY);
     }
 
-    // Esperar a que terminen las activas
     while (activeProcessing > 0) {
         await sleep(100);
     }
@@ -284,34 +244,33 @@ async function processQueue() {
     }
 }
 
-// --- Procesar un elemento (img, canvas, o div con bg) ---
+// --- Procesar un elemento ---
 async function processElement(element) {
     try {
-        let imageBase64;
-
-        if (element.tagName === 'IMG') {
-            // Verificar tamano real (permitir imagenes largas/finas)
-            const maxDim = Math.max(element.naturalWidth, element.naturalHeight);
-            const area = element.naturalWidth * element.naturalHeight;
-            if (maxDim < MIN_IMAGE_DIMENSION || area < MIN_IMAGE_AREA) {
-                console.log(`Imagen muy pequena: ${element.naturalWidth}x${element.naturalHeight}`);
-                return;
-            }
-            imageBase64 = await imageToBase64(element);
-        } else if (element.tagName === 'CANVAS') {
-            imageBase64 = canvasToBase64(element);
-        } else if (element.dataset.bgImage) {
-            imageBase64 = await fetchImageAsBase64(element.dataset.bgImage);
+        if (element.tagName !== 'IMG') {
+            console.log('Solo se procesan elementos IMG');
+            return;
         }
 
+        // Verificar tamano
+        const maxDim = Math.max(element.naturalWidth, element.naturalHeight);
+        const area = element.naturalWidth * element.naturalHeight;
+        if (maxDim < MIN_IMAGE_DIMENSION || area < MIN_IMAGE_AREA) {
+            console.log(`Imagen muy pequena: ${element.naturalWidth}x${element.naturalHeight}`);
+            return;
+        }
+
+        // Obtener base64
+        const imageBase64 = await imageToBase64(element);
+
         if (!imageBase64) {
-            console.warn('No se pudo obtener base64 de:', element);
+            console.warn('No se pudo obtener base64 de la imagen');
             return;
         }
 
         console.log(`Enviando imagen al servidor (${Math.round(imageBase64.length/1024)}KB)...`);
 
-        // Enviar al background para OCR + traduccion
+        // Enviar al background
         const response = await chrome.runtime.sendMessage({
             action: 'processImage',
             imageData: imageBase64,
@@ -326,7 +285,7 @@ async function processElement(element) {
 
         if (blocks && blocks.length > 0) {
             console.log(`Recibidos ${blocks.length} bloques de texto`);
-            createOverlaysForElement(element, blocks);
+            createOverlaysForImage(element, blocks);
             stats.blocks += blocks.length;
         } else {
             console.log('No se detecto texto en la imagen');
@@ -338,106 +297,126 @@ async function processElement(element) {
 }
 
 // --- Convertir imagen a base64 ---
-function imageToBase64(img) {
-    return new Promise((resolve) => {
-        try {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-
-            canvas.width = img.naturalWidth;
-            canvas.height = img.naturalHeight;
-            ctx.drawImage(img, 0, 0);
-
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-            resolve(dataUrl.split(',')[1]);
-        } catch (error) {
-            // Error CORS - intentar fetch
-            console.warn('Error canvas (CORS), intentando fetch...');
-            const src = getRealImageSrc(img);
-            if (src) {
-                fetchImageAsBase64(src).then(resolve);
-            } else {
-                resolve(null);
-            }
-        }
-    });
-}
-
-// --- Canvas a base64 ---
-function canvasToBase64(canvas) {
+async function imageToBase64(img) {
+    // Primero intentar con canvas
     try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        ctx.drawImage(img, 0, 0);
+
         const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-        return dataUrl.split(',')[1];
-    } catch (e) {
-        return null;
+        const base64 = dataUrl.split(',')[1];
+
+        if (base64 && base64.length > 100) {
+            return base64;
+        }
+    } catch (error) {
+        console.warn('Error canvas (CORS), intentando fetch...');
     }
+
+    // Fallback: fetch
+    const src = getRealImageSrc(img);
+    if (!src) return null;
+
+    return await fetchImageAsBase64(src);
 }
 
 // --- Fetch imagen como base64 ---
 async function fetchImageAsBase64(url) {
     try {
-        const response = await fetch(url, { mode: 'cors' });
+        // Intentar sin credenciales primero
+        let response = await fetch(url, {
+            mode: 'cors',
+            credentials: 'omit'
+        });
+
+        if (!response.ok) {
+            // Intentar con credenciales
+            response = await fetch(url, {
+                mode: 'cors',
+                credentials: 'include'
+            });
+        }
+
+        if (!response.ok) {
+            console.error(`Fetch fallo con status: ${response.status}`);
+            return null;
+        }
+
         const blob = await response.blob();
 
         return new Promise((resolve) => {
             const reader = new FileReader();
-            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onload = () => {
+                const result = reader.result;
+                if (result && result.includes(',')) {
+                    resolve(result.split(',')[1]);
+                } else {
+                    resolve(null);
+                }
+            };
             reader.onerror = () => resolve(null);
             reader.readAsDataURL(blob);
         });
     } catch (error) {
-        console.error('Error fetch imagen:', error);
+        console.error('Error fetch imagen:', error.message);
         return null;
     }
 }
 
-// --- Crear overlays para un elemento ---
-function createOverlaysForElement(element, blocks) {
-    let container = element.parentElement;
-    if (!container) return;
+// --- Crear overlays para una imagen ---
+function createOverlaysForImage(img, blocks) {
+    // Crear wrapper alrededor de la imagen si no existe
+    let wrapper = img.parentElement;
 
-    // Asegurar posicionamiento relativo
-    const containerPos = getComputedStyle(container).position;
-    if (containerPos === 'static') {
-        container.style.position = 'relative';
+    if (!wrapper.classList.contains(WRAPPER_CLASS)) {
+        wrapper = document.createElement('div');
+        wrapper.classList.add(WRAPPER_CLASS);
+
+        // Copiar estilos relevantes de la imagen
+        const imgStyle = getComputedStyle(img);
+        wrapper.style.cssText = `
+            position: relative;
+            display: ${imgStyle.display === 'inline' ? 'inline-block' : imgStyle.display};
+            width: ${img.offsetWidth}px;
+            max-width: 100%;
+            margin: ${imgStyle.margin};
+        `;
+
+        // Insertar wrapper
+        img.parentNode.insertBefore(wrapper, img);
+        wrapper.appendChild(img);
+
+        // Resetear margenes de la imagen
+        img.style.margin = '0';
+        img.style.display = 'block';
+        img.style.width = '100%';
     }
 
-    // Obtener dimensiones
-    let naturalWidth, naturalHeight, displayWidth, displayHeight, offsetTop, offsetLeft;
-
-    if (element.tagName === 'IMG') {
-        naturalWidth = element.naturalWidth;
-        naturalHeight = element.naturalHeight;
-        displayWidth = element.offsetWidth;
-        displayHeight = element.offsetHeight;
-        offsetTop = element.offsetTop;
-        offsetLeft = element.offsetLeft;
-    } else {
-        const rect = element.getBoundingClientRect();
-        naturalWidth = displayWidth = rect.width;
-        naturalHeight = displayHeight = rect.height;
-        offsetTop = element.offsetTop;
-        offsetLeft = element.offsetLeft;
-    }
-
-    if (displayWidth === 0 || displayHeight === 0) return;
-
-    const scaleX = displayWidth / naturalWidth;
-    const scaleY = displayHeight / naturalHeight;
+    // Calcular escala
+    const scaleX = img.offsetWidth / img.naturalWidth;
+    const scaleY = img.offsetHeight / img.naturalHeight;
 
     console.log(`Creando ${blocks.length} overlays (escala: ${scaleX.toFixed(2)}x${scaleY.toFixed(2)})`);
+    console.log(`Imagen: ${img.naturalWidth}x${img.naturalHeight} -> ${img.offsetWidth}x${img.offsetHeight}`);
 
-    blocks.forEach((block) => {
+    blocks.forEach((block, index) => {
         if (!block || !block.bbox || !block.translatedText) return;
         if (block.bbox.x1 <= block.bbox.x0 || block.bbox.y1 <= block.bbox.y0) return;
 
         const overlay = document.createElement('div');
         overlay.classList.add(OVERLAY_CLASS);
 
-        const top = offsetTop + block.bbox.y0 * scaleY;
-        const left = offsetLeft + block.bbox.x0 * scaleX;
+        // Posicion relativa a la imagen
+        const top = block.bbox.y0 * scaleY;
+        const left = block.bbox.x0 * scaleX;
         const width = (block.bbox.x1 - block.bbox.x0) * scaleX;
         const height = (block.bbox.y1 - block.bbox.y0) * scaleY;
+
+        console.log(`Overlay ${index}: top=${top.toFixed(0)}, left=${left.toFixed(0)}, ${width.toFixed(0)}x${height.toFixed(0)}`);
 
         overlay.style.cssText = `
             position: absolute;
@@ -451,7 +430,7 @@ function createOverlaysForElement(element, blocks) {
             font-size: ${calculateFontSize(block.translatedText, width, height)}px;
             font-family: Arial, sans-serif;
             color: #000;
-            z-index: 99999;
+            z-index: 1000;
             text-align: center;
             overflow: hidden;
             line-height: 1.2;
@@ -466,7 +445,7 @@ function createOverlaysForElement(element, blocks) {
         `;
 
         overlay.textContent = block.translatedText;
-        container.appendChild(overlay);
+        wrapper.appendChild(overlay);
     });
 }
 
@@ -483,7 +462,7 @@ function calculateFontSize(text, width, height) {
     return Math.round(Math.max(minSize, Math.min(maxSize, fontSize)));
 }
 
-// --- Observador de mutaciones para imagenes dinamicas ---
+// --- Observador de mutaciones ---
 function startObserver() {
     if (observer) observer.disconnect();
 
@@ -496,12 +475,10 @@ function startObserver() {
             mutation.addedNodes.forEach((node) => {
                 if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-                // Si es una imagen
                 if (node.tagName === 'IMG' && isValidImage(node)) {
                     newImages.push(node);
                 }
 
-                // Buscar imagenes dentro del nodo anadido
                 if (node.querySelectorAll) {
                     node.querySelectorAll('img').forEach(img => {
                         if (isValidImage(img)) {
@@ -511,11 +488,10 @@ function startObserver() {
                 }
             });
 
-            // Tambien detectar cambios de src en imagenes existentes
-            if (mutation.type === 'attributes' && mutation.attributeName === 'src') {
+            if (mutation.type === 'attributes' &&
+                (mutation.attributeName === 'src' || mutation.attributeName === 'data-src')) {
                 const img = mutation.target;
                 if (img.tagName === 'IMG' && isValidImage(img)) {
-                    // Resetear procesamiento si cambio el src
                     const imageId = getImageId(img);
                     if (!processedImages.has(imageId)) {
                         newImages.push(img);
@@ -526,7 +502,6 @@ function startObserver() {
 
         if (newImages.length > 0) {
             console.log(`Detectadas ${newImages.length} nuevas imagenes`);
-            // Esperar un poco para que carguen
             setTimeout(async () => {
                 await waitForImagesToLoad(newImages);
                 processingQueue.push(...newImages);
@@ -561,9 +536,20 @@ function stopTranslationProcess() {
     // Eliminar overlays
     document.querySelectorAll(`.${OVERLAY_CLASS}`).forEach(el => el.remove());
 
-    // Limpiar estado
-    processedImages.clear();
+    // Deshacer wrappers
+    document.querySelectorAll(`.${WRAPPER_CLASS}`).forEach(wrapper => {
+        const img = wrapper.querySelector('img');
+        if (img) {
+            wrapper.parentNode.insertBefore(img, wrapper);
+            // Restaurar estilos originales
+            img.style.margin = '';
+            img.style.display = '';
+            img.style.width = '';
+        }
+        wrapper.remove();
+    });
 
+    processedImages.clear();
     hidePopupProgress();
 }
 
