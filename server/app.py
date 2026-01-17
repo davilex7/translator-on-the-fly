@@ -12,6 +12,7 @@ import base64
 import io
 import os
 import math
+import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
@@ -295,9 +296,12 @@ def ocr_endpoint():
         image_width, image_height = image.size
         print(f"Procesando imagen ({image_width}x{image_height})...")
 
+        # Convertir PIL a numpy array para EasyOCR
+        image_np = np.array(image)
+
         # Ejecutar OCR con EasyOCR
         results = reader.readtext(
-            image,
+            image_np,
             detail=1,
             paragraph=False,
             min_size=10,
