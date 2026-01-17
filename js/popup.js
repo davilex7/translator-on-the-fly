@@ -1,4 +1,4 @@
-// popup.js - Lógica para la ventana emergente
+// popup.js - Logica para la ventana emergente
 
 // --- Elementos del DOM ---
 const toggleSwitch = document.getElementById('toggle');
@@ -7,80 +7,99 @@ const languageSelect = document.getElementById('language-select');
 const progressSection = document.getElementById('progress-section');
 const progressStatus = document.getElementById('progress-status');
 const progressBar = document.getElementById('progress-bar');
-const apiKeyInput = document.getElementById('api-key');
-const saveApiKeyBtn = document.getElementById('save-api-key');
-const apiKeyStatus = document.getElementById('api-key-status');
-const apiStatusIndicator = document.getElementById('api-status-indicator');
+const serverStatusDot = document.getElementById('server-status-dot');
+const serverStatusText = document.getElementById('server-status-text');
+const serverUrlInput = document.getElementById('server-url');
+const saveUrlBtn = document.getElementById('save-url-btn');
+const checkServerBtn = document.getElementById('check-server-btn');
 const statsSection = document.getElementById('stats-section');
 const statsImages = document.getElementById('stats-images');
 const statsBlocks = document.getElementById('stats-blocks');
 
 // --- Estado ---
-let hasApiKey = false;
+let serverOnline = false;
 
 // --- Cargar estado inicial ---
 document.addEventListener('DOMContentLoaded', () => {
-    chrome.storage.sync.get(['isEnabled', 'targetLanguage', 'visionApiKey'], (result) => {
+    chrome.storage.sync.get(['isEnabled', 'targetLanguage', 'serverUrl'], (result) => {
         const isEnabled = result.isEnabled || false;
         const targetLanguage = result.targetLanguage || 'es';
-
-        // Verificar si hay API Key configurada
-        hasApiKey = !!(result.visionApiKey && result.visionApiKey.trim());
-
-        updateApiKeyUI(hasApiKey);
+        const serverUrl = result.serverUrl || 'http://localhost:5000';
 
         toggleSwitch.checked = isEnabled;
-        toggleSwitch.disabled = !hasApiKey;
         languageSelect.value = targetLanguage;
+        serverUrlInput.value = serverUrl;
 
-        updateStatusText(isEnabled, hasApiKey);
+        // Verificar estado del servidor al abrir
+        checkServerStatus();
+    });
+});
 
-        // Mostrar parcialmente la API Key si existe
-        if (hasApiKey) {
-            const key = result.visionApiKey;
-            apiKeyInput.placeholder = key.substring(0, 8) + '...' + key.substring(key.length - 4);
+// --- Verificar estado del servidor ---
+async function checkServerStatus() {
+    setServerStatus('checking', 'Verificando conexion...');
+
+    try {
+        const response = await chrome.runtime.sendMessage({ action: 'checkServer' });
+
+        if (response.success && response.data.online) {
+            serverOnline = true;
+            setServerStatus('online', 'Conectado (EasyOCR)');
+            toggleSwitch.disabled = false;
+            updateStatusText();
+        } else {
+            serverOnline = false;
+            const errorMsg = response.data?.error || response.error || 'No disponible';
+            setServerStatus('offline', 'Desconectado: ' + errorMsg);
+            toggleSwitch.disabled = true;
+            toggleSwitch.checked = false;
+            statusText.textContent = 'Inicia el servidor para comenzar';
         }
-    });
-});
-
-// --- Guardar API Key ---
-saveApiKeyBtn.addEventListener('click', () => {
-    const apiKey = apiKeyInput.value.trim();
-
-    if (!apiKey) {
-        showApiKeyMessage('Introduce una API Key valida', 'error');
-        return;
-    }
-
-    if (!apiKey.startsWith('AIza')) {
-        showApiKeyMessage('La API Key debe comenzar con "AIza"', 'error');
-        return;
-    }
-
-    // Guardar la API Key
-    chrome.storage.sync.set({ visionApiKey: apiKey }, () => {
-        hasApiKey = true;
-        updateApiKeyUI(true);
-        toggleSwitch.disabled = false;
-        apiKeyInput.value = '';
-        apiKeyInput.placeholder = apiKey.substring(0, 8) + '...' + apiKey.substring(apiKey.length - 4);
-        showApiKeyMessage('API Key guardada correctamente', 'success');
-        updateStatusText(toggleSwitch.checked, true);
-    });
-});
-
-// --- Toggle de traducción ---
-toggleSwitch.addEventListener('change', () => {
-    if (!hasApiKey) {
+    } catch (error) {
+        serverOnline = false;
+        setServerStatus('offline', 'Error: ' + error.message);
+        toggleSwitch.disabled = true;
         toggleSwitch.checked = false;
-        showApiKeyMessage('Configura primero tu API Key', 'error');
+        statusText.textContent = 'Inicia el servidor para comenzar';
+    }
+}
+
+function setServerStatus(status, text) {
+    serverStatusDot.className = 'status-dot ' + status;
+    serverStatusText.textContent = text;
+}
+
+// --- Guardar URL del servidor ---
+saveUrlBtn.addEventListener('click', () => {
+    const url = serverUrlInput.value.trim();
+    if (!url) return;
+
+    // Limpiar URL (quitar / final si existe)
+    const cleanUrl = url.replace(/\/+$/, '');
+    serverUrlInput.value = cleanUrl;
+
+    chrome.storage.sync.set({ serverUrl: cleanUrl }, () => {
+        checkServerStatus();
+    });
+});
+
+// --- Boton verificar servidor ---
+checkServerBtn.addEventListener('click', () => {
+    checkServerStatus();
+});
+
+// --- Toggle de traduccion ---
+toggleSwitch.addEventListener('change', () => {
+    if (!serverOnline) {
+        toggleSwitch.checked = false;
+        statusText.textContent = 'Servidor no disponible';
         return;
     }
 
     const isEnabled = toggleSwitch.checked;
 
     chrome.storage.sync.set({ isEnabled: isEnabled }, () => {
-        updateStatusText(isEnabled, hasApiKey);
+        updateStatusText();
 
         sendMessageToContentScript({
             action: "toggleTranslation",
@@ -103,28 +122,10 @@ languageSelect.addEventListener('change', () => {
 });
 
 // --- Funciones auxiliares ---
-function updateApiKeyUI(configured) {
-    if (configured) {
-        apiStatusIndicator.classList.remove('not-configured');
-        apiStatusIndicator.classList.add('configured');
-    } else {
-        apiStatusIndicator.classList.remove('configured');
-        apiStatusIndicator.classList.add('not-configured');
-    }
-}
-
-function showApiKeyMessage(message, type) {
-    apiKeyStatus.textContent = message;
-    apiKeyStatus.className = 'text-xs mt-1 ' + (type === 'error' ? 'text-red-500' : 'text-green-500');
-    setTimeout(() => {
-        apiKeyStatus.textContent = '';
-    }, 3000);
-}
-
-function updateStatusText(isEnabled, hasKey) {
-    if (!hasKey) {
-        statusText.textContent = 'Configura tu API Key para comenzar';
-    } else if (isEnabled) {
+function updateStatusText() {
+    if (!serverOnline) {
+        statusText.textContent = 'Inicia el servidor para comenzar';
+    } else if (toggleSwitch.checked) {
         statusText.textContent = 'Estado: Activado';
     } else {
         statusText.textContent = 'Estado: Desactivado';
@@ -163,7 +164,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             statusText.classList.add('text-red-500');
             setTimeout(() => {
                 statusText.classList.remove('text-red-500');
-                updateStatusText(toggleSwitch.checked, hasApiKey);
+                updateStatusText();
             }, 5000);
         }
     }
